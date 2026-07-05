@@ -19,7 +19,7 @@
 !pragma warning disable 6020 ; don't complain about missing installer in second invocation
 
 ; The name of the installer
-Name "Anki"
+Name "Kelma"
 
 Unicode true
 

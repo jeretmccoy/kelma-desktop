@@ -4,11 +4,11 @@ set -e
 
 # Define output path
 OUTPUT_DIR="$1"
-APP_LAUNCHER="$OUTPUT_DIR/Anki.app"
-ZIP_FILE="$OUTPUT_DIR/Anki.zip"
+APP_LAUNCHER="$OUTPUT_DIR/Kelma.app"
+ZIP_FILE="$OUTPUT_DIR/Kelma.zip"
 
 # Create zip for notarization
-(cd "$OUTPUT_DIR" && rm -rf Anki.zip && zip -r Anki.zip Anki.app)
+(cd "$OUTPUT_DIR" && rm -rf Kelma.zip && zip -r Kelma.zip Kelma.app)
 
 # Upload for notarization
 xcrun notarytool submit "$ZIP_FILE" -p default --wait

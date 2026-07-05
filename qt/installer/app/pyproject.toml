@@ -3,7 +3,7 @@ requires-python = ">=3.10"
 
 # This project was generated with 0.3.26 using template: https://github.com/beeware/briefcase-template @ v0.3.26
 [tool.briefcase]
-project_name = "Anki"
+project_name = "Kelma"
 bundle = "net.ankiweb"
 url = "https://apps.ankiweb.net"
 license = "AGPL-3.0-or-later"
@@ -11,7 +11,7 @@ license-files = ["LICENSE"]
 author = "Damien Elmes"
 
 [tool.briefcase.app.anki]
-formal_name = "Anki"
+formal_name = "Kelma"
 description = "An intelligent spaced-repetition learning system"
 long_description = """Anki is a flashcard program that helps you spend more time on challenging material, and less on what you already know."""
 sources = [

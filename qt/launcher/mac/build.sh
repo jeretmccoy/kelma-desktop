@@ -4,7 +4,7 @@ set -e
 
 # Define output path
 OUTPUT_DIR="../../../out/launcher"
-APP_LAUNCHER="$OUTPUT_DIR/Anki.app"
+APP_LAUNCHER="$OUTPUT_DIR/Kelma.app"
 rm -rf "$APP_LAUNCHER"
 
 # Build binaries for both architectures
