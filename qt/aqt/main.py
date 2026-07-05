@@ -1005,6 +1005,13 @@ title="{}" {}>{}</button>""".format(
             self.installAddon(args[0], startup=True)
 
         if not self.safeMode:
+            # KelmaDesktop: install/update the bundled Kelma add-on before load.
+            try:
+                from aqt._kelma_bundled import sync_bundled_addon
+
+                sync_bundled_addon(self)
+            except Exception:  # noqa: BLE001 - never block startup
+                pass
             self.addonManager.loadAddons()
 
     def maybe_check_for_addon_updates(

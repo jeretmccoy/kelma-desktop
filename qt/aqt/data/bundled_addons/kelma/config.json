@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "kelmasync_url": "https://sync.kelma.tech/",
+  "kelmasync_hkey": "",
+  "kelmasync_user": "",
+  "kelmasync_path": "auto",
+  "ankiweb_hkey": "",
+  "ankiweb_user": "",
+  "sync_media": true,
+  "wrap_sync_button": true,
+  "block_native_sync": true,
+  "backup_before_sync": true,
+  "deck_routing": {},
+  "features": {}
+}
