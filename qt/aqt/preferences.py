@@ -236,6 +236,13 @@ class Preferences(QDialog):
         qconnect(self.form.syncAnkiHubLogout.clicked, self.ankihub_sync_logout)
         qconnect(self.form.syncAnkiHubLogin.clicked, self.ankihub_sync_login)
 
+        # KelmaDesktop: hide the AnkiWeb account section — this build syncs to
+        # KelmaSync only (via the bundled Kelma add-on), never AnkiWeb.
+        try:
+            self.form.groupBox_6.setVisible(False)
+        except Exception:  # noqa: BLE001
+            pass
+
     def update_login_status(self) -> None:
         assert self.prof is not None
         if not self.prof.get("syncKey"):
