@@ -114,7 +114,29 @@ fn build_data_folder(build: &mut Build) -> Result<()> {
     build_pages(build)?;
     build_icons(build)?;
     copy_sveltekit(build)?;
+    copy_kelma_assets(build)?;
     Ok(())
+}
+
+fn copy_kelma_assets(build: &mut Build) -> Result<()> {
+    // KelmaDesktop ships two things that live under aqt/data but the stock build
+    // graph doesn't assemble into the wheel tree: the bundled KelmaSync add-on
+    // and the Computer Modern fonts used on the statistics page. aqt/data is
+    // excluded from the wheel (see qt/pyproject.toml), and only what's copied
+    // into out/qt/_aqt/data is force-included, so copy these in explicitly —
+    // otherwise the packaged app ships without the plugin and fonts.
+    build.add_action(
+        "qt:aqt:data:kelma",
+        RsyncFiles {
+            inputs: inputs![
+                glob!["qt/aqt/data/bundled_addons/**"],
+                glob!["qt/aqt/data/web/kelma/**"]
+            ],
+            target_folder: "qt/_aqt/data",
+            strip_prefix: "qt/aqt/data",
+            extra_args: "-a",
+        },
+    )
 }
 
 fn copy_sveltekit(build: &mut Build) -> Result<()> {
