@@ -77,7 +77,8 @@ def get_briefcase_sources_path(out_dir: Path) -> Path:
             / "anki"
             / "macos"
             / "app"
-            / "Anki.app"
+            # Briefcase names the bundle after formal_name (Kelma), not the app key.
+            / "Kelma.app"
             / "Contents"
             / "Resources"
         )

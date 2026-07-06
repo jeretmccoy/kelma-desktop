@@ -4,16 +4,18 @@ requires-python = ">=3.10"
 # This project was generated with 0.3.26 using template: https://github.com/beeware/briefcase-template @ v0.3.26
 [tool.briefcase]
 project_name = "Kelma"
-bundle = "net.ankiweb"
-url = "https://apps.ankiweb.net"
+bundle = "tech.kelma"
+url = "https://kelma.tech"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
-author = "Damien Elmes"
+author = "Kelma"
 
 [tool.briefcase.app.anki]
 formal_name = "Kelma"
-description = "An intelligent spaced-repetition learning system"
-long_description = """Anki is a flashcard program that helps you spend more time on challenging material, and less on what you already know."""
+description = "An intelligent spaced-repetition learning system for language immersion"
+long_description = """Kelma is a flashcard program that helps you spend more time on challenging material, and less on what you already know. It syncs with KelmaSync and KelmaMobile.
+
+Kelma is an open-source fork of Anki (© Ankitects Pty Ltd), distributed under the AGPL-3.0."""
 sources = [
   "src/anki",
 ]
@@ -82,25 +84,25 @@ supported = false
 supported = false
 
 [tool.briefcase.app.anki.document_type.apkg]
-description = "Anki deck package"
+description = "Kelma deck package"
 extension = "apkg"
 icon = "resources/anki"
 mime_type = "application/x-apkg"
-url = "https://docs.ankiweb.net/exporting.html#deck-apkg"
+url = "https://kelma.tech"
 macOS.CFBundleTypeRole = "Editor"
 
 [tool.briefcase.app.anki.document_type.colpkg]
-description = "Anki collection package"
+description = "Kelma collection package"
 extension = "colpkg"
 icon = "resources/anki"
 mime_type = "application/x-colpkg"
-url = "https://docs.ankiweb.net/exporting.html#collection-colpkg"
+url = "https://kelma.tech"
 macOS.CFBundleTypeRole = "Editor"
 
 [tool.briefcase.app.anki.document_type.ankiaddon]
-description = "Anki add-on package"
+description = "Kelma add-on package"
 extension = "ankiaddon"
 icon = "resources/anki"
 mime_type = "application/x-ankiaddon"
-url = "https://addon-docs.ankiweb.net/sharing.html"
+url = "https://kelma.tech"
 macOS.CFBundleTypeRole = "Editor"
