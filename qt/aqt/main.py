@@ -1464,10 +1464,9 @@ title="{}" {}>{}</button>""".format(
         qconnect(m.actionNoteTypes.triggered, self.onNoteTypes)
         qconnect(m.action_upgrade_downgrade.triggered, self.on_upgrade_downgrade)
         qconnect(m.action_check_for_updates.triggered, self.on_check_for_updates)
-        if launcher_executable():
-            m.action_check_for_updates.setVisible(False)
-        else:
-            m.action_upgrade_downgrade.setVisible(False)
+        # KelmaDesktop: no Anki update/version UI — this is a fork, not Anki.
+        m.action_check_for_updates.setVisible(False)
+        m.action_upgrade_downgrade.setVisible(False)
         qconnect(m.actionPreferences.triggered, self.onPrefs)
 
         # View
@@ -1530,10 +1529,9 @@ title="{}" {}>{}</button>""".format(
     ##########################################################################
 
     def setup_auto_update(self, _log: list[DownloadLogEntry]) -> None:
-        from aqt.update import check_for_update
-
-        if aqt.mw.pm.check_for_updates():
-            check_for_update()
+        # KelmaDesktop is a fork: never poll Anki's update server or prompt to
+        # install Anki. (Wire this to a Kelma release feed when one exists.)
+        return
 
     # Timers
     ##########################################################################
