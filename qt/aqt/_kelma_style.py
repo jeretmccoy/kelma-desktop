@@ -19,6 +19,8 @@ must never break rendering.
 
 from __future__ import annotations
 
+import json
+
 from aqt import gui_hooks, mw
 from aqt.theme import theme_manager
 
@@ -269,6 +271,107 @@ body {{
 """
 
 
+# Semantic rating colors for the answer buttons (kept close to Anki's), shown
+# as a coloured accent bar so the four choices stay instantly recognizable.
+EASE_COLOR = {
+    "1": "#e0555f",  # Again  — red
+    "2": "#e0913f",  # Hard   — amber
+    "3": "#5bbf83",  # Good   — green
+    "4": "#5a9fe0",  # Easy   — blue
+}
+
+
+def _reviewer_bottom_css() -> str:
+    """Modern study controls: pill answer buttons with a per-rating accent bar,
+    and a prominent gold Show Answer button."""
+    p = _pal()
+    accent, bright, on_accent, tint = _accent()
+    grad = f"linear-gradient(135deg, {bright}, {accent})"
+    ease_rules = "".join(
+        f"""
+#middle button[data-ease="{e}"] {{ border-bottom: 3px solid {c} !important; }}
+#middle button[data-ease="{e}"] .nobold {{ color: {c} !important; opacity: 0.9; }}
+#middle button[data-ease="{e}"]:hover {{ border-color: {c} !important; }}
+"""
+        for e, c in EASE_COLOR.items()
+    )
+    return f"""
+<style id="kelma-reviewer-bottom">
+body {{ font-family: {FONT_STACK}; }}
+#middle button {{
+  border: 1px solid {p['border_subtle']} !important;
+  border-radius: 12px !important;
+  background: {p['elevated']} !important;
+  color: {p['fg']} !important;
+  padding: 9px 20px !important;
+  min-width: 82px !important;
+  margin: 8px 7px !important;
+  font-weight: 600;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}}
+#middle button:hover {{
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+}}
+{ease_rules}
+/* Show Answer — the primary action, a gold pill. */
+#ansbut {{
+  background: {grad} !important;
+  color: {on_accent} !important;
+  border: none !important;
+  border-radius: 999px !important;
+  padding: 11px 40px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.01em;
+  box-shadow: 0 6px 18px rgba(201, 172, 107, 0.34) !important;
+}}
+#ansbut:hover {{ transform: translateY(-2px); }}
+.nobold, .stattxt {{ color: {p['fg_faint']} !important; }}
+</style>
+"""
+
+
+def _reviewer_css() -> str:
+    """Subtle polish on the study card frame — never touches user card CSS."""
+    accent, bright, _on, _tint = _accent()
+    return f"""
+<style id="kelma-reviewer">
+/* Q/A divider as a soft gold gradient hairline instead of a hard rule. */
+hr#answer {{
+  border: none !important;
+  height: 2px !important;
+  background: linear-gradient(90deg, transparent, {accent}, transparent) !important;
+  opacity: 0.75;
+  margin: 1.1em auto !important;
+  max-width: 620px;
+}}
+</style>
+"""
+
+
+def _stats_css() -> str:
+    """Graph cards: rounded, elevated, subtly bordered — a modern dashboard."""
+    p = _pal()
+    accent, _bright, _on, _tint = _accent()
+    shadow = (
+        "0 1px 2px rgba(0,0,0,0.30), 0 8px 22px rgba(0,0,0,0.22)"
+        if theme_manager.night_mode
+        else "0 1px 2px rgba(60,50,20,0.05), 0 10px 26px rgba(120,100,40,0.09)"
+    )
+    return f"""
+.graph {{
+  background: {p['surface']} !important;
+  border: 1px solid {p['border_subtle']} !important;
+  border-radius: 16px !important;
+  box-shadow: {shadow} !important;
+  padding: 1.1em 1.2em !important;
+  margin: 0.7em auto !important;
+}}
+.graph h1, .graph .title {{ letter-spacing: 0.01em; }}
+.range-box, .range-box-inner {{ border-radius: 12px !important; }}
+"""
+
+
 def _qss() -> str:
     """Native Qt chrome: menus, buttons, tabs, scrollbars, progress bars."""
     p = _pal()
@@ -327,6 +430,29 @@ QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTextEdit {{
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus,
 QPlainTextEdit:focus, QTextEdit:focus {{ border-color: {accent}; }}
+
+/* --- Browser: card table + sidebar tree --- */
+QTableView, QTreeView {{
+  border: none;
+  background-color: {p['canvas']};
+  alternate-background-color: {p['surface']};
+  selection-background-color: {accent};
+  selection-color: {on_accent};
+  outline: 0;
+}}
+QTableView::item, QTreeView::item {{ padding: 3px 4px; }}
+QTableView::item:selected, QTreeView::item:selected {{
+  background-color: {accent}; color: {on_accent};
+}}
+QTreeView::item:hover, QTableView::item:hover {{ background-color: {_tint}; }}
+QHeaderView::section {{
+  background-color: {p['surface']};
+  color: {p['fg_faint']};
+  border: none;
+  border-bottom: 1px solid {p['border']};
+  padding: 6px 8px;
+  font-weight: 600;
+}}
 """
 
 
@@ -340,6 +466,25 @@ def _on_webview(web_content, context) -> None:
             web_content.head += _overview_css()
         elif name in ("Toolbar", "TopToolbar"):
             web_content.head += _toolbar_css()
+        elif name == "ReviewerBottomBar":
+            web_content.head += _reviewer_bottom_css()
+        elif name == "Reviewer":
+            web_content.head += _reviewer_css()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _on_page_style(webview) -> None:
+    """Theme load_url pages (stats graphs, deck options, import …) that don't go
+    through webview_will_set_content — inject the palette + graph-card polish."""
+    try:
+        css = _vars_css() + _scrollbar_css() + _stats_css()
+        payload = json.dumps(css)
+        webview.eval(
+            "(function(){var s=document.createElement('style');"
+            "s.id='kelma-page';s.textContent=" + payload + ";"
+            "document.head.appendChild(s);})();"
+        )
     except Exception:  # noqa: BLE001
         pass
 
@@ -362,6 +507,7 @@ def _on_theme_change() -> None:
 def setup() -> None:
     gui_hooks.style_did_init.append(_on_style)
     gui_hooks.webview_will_set_content.append(_on_webview)
+    gui_hooks.webview_did_inject_style_into_page.append(_on_page_style)
     gui_hooks.theme_did_change.append(_on_theme_change)
     try:
         theme_manager.apply_style()
