@@ -32,7 +32,7 @@ preferences-timebox-time-limit = Timebox time limit
 preferences-user-interface-size = User interface size
 preferences-when-adding-default-to-current-deck = When adding, default to current deck
 preferences-you-can-restore-backups-via-fileswitch = You can restore backups via File > Switch Profile.
-preferences-legacy-timezone-handling = Legacy timezone handling (buggy, but required for AnkiDroid <= 2.14)
+preferences-legacy-timezone-handling = Legacy timezone handling (buggy, but required for KelmaMobile <= 2.14)
 preferences-default-search-text = Default search text
 preferences-default-search-text-example = e.g. "deck:current"
 preferences-theme = Theme
@@ -70,7 +70,7 @@ preferences-minimalist-mode-tooltip = Make the interface more compact/less fancy
 preferences-editing = Editing
 preferences-browsing = Browsing
 preferences-default-deck = Default deck
-preferences-account = AnkiWeb Account
+preferences-account = KelmaSync Account
 preferences-note = Note
 preferences-scheduler = Scheduler
 preferences-user-interface = User Interface
@@ -81,7 +81,7 @@ preferences-reset-window-sizes-complete = Window sizes and locations have been r
 preferences-shortcut-placeholder = Enter an unused shortcut key, or leave empty to disable.
 preferences-third-party-services = Third-Party Services
 preferences-ankihub-not-logged-in = Not currently logged in to AnkiHub.
-preferences-ankiweb-intro = AnkiWeb is a free service that lets you keep your flashcard data in sync across your devices, and provides a way to recover the data if your device breaks or is lost.
+preferences-ankiweb-intro = KelmaSync is a free service that lets you keep your flashcard data in sync across your devices, and provides a way to recover the data if your device breaks or is lost.
 preferences-ankihub-intro = AnkiHub provides collaborative deck editing and additional study tools. A paid subscription is required to access certain features.
 preferences-third-party-description = Third-party services are unaffiliated with and not endorsed by Kelma. Use of these services may require payment.
 
@@ -99,4 +99,4 @@ preferences-url-scheme-always-allow = Always Allow
 preferences-basic = Basic
 preferences-reviewer = Reviewer
 preferences-media = Media
-preferences-not-logged-in = Not currently logged in to AnkiWeb.
+preferences-not-logged-in = Not currently logged in to KelmaSync.

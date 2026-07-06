@@ -88,8 +88,8 @@ except AttributeError:
         sys.stderr = sys.stdout = open(os.devnull, "w", encoding="utf8")
 
 appVersion = _version
-appWebsite = "https://apps.ankiweb.net/"
-appWebsiteDownloadSection = "https://apps.ankiweb.net/#download"
+appWebsite = "https://kelma.tech/"
+appWebsiteDownloadSection = "https://kelma.tech/"
 appDonate = "https://docs.ankiweb.net/contrib.html"
 appShared = "https://ankiweb.net/shared/"
 appUpdate = "https://ankiweb.net/update/desktop"

@@ -625,6 +625,6 @@ deck-config-compute-optimal-retention-tooltip3 =
 deck-config-seconds-to-show-question-tooltip-2 = When auto advance is activated, the number of seconds to wait before revealing the answer. Set to 0 to disable.
 deck-config-invalid-weights = Parameters must be either left blank to use the defaults, or must be 17 comma-separated numbers.
 deck-config-fsrs-on-all-clients =
-    Please ensure all of your Kelma clients are Kelma(Mobile) 23.10+ or AnkiDroid 2.17+. FSRS will
+    Please ensure all of your Kelma clients are Kelma(Mobile) 23.10+ or KelmaMobile 2.17+. FSRS will
     not work correctly if one of your clients is older.
 deck-config-optimize-all-tip = You can optimize all presets at once by using the dropdown button next to "Save".
