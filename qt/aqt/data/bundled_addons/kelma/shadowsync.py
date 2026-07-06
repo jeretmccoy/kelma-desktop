@@ -263,13 +263,26 @@ def sync_service(service: str, reporter: Reporter) -> dict:
             reporter.unwatch()
 
         # --- pull: shadow -> master (changed decks only) ---------------------
+        # The server (mirrored in the shadow) may hold decks the master doesn't
+        # yet — a fresh install, or a deck created on another client (KelmaMobile,
+        # the web app). Those must be imported here, so the pull set is the routed
+        # decks PLUS any server-only deck. `routed` (master-side) still drives the
+        # push and deletion logic above.
         reporter.advance(f"{label}: checking server changes…")
-        sfps = state.fingerprints_for(shadow, routed)
-        mnow = state.fingerprints_for(mw.col, routed)
-        to_pull = set(_changed(sfps, dstate, "s", routed, use_fp))
+        master_names = set(_master_deck_names())
+        server_only = [
+            d.name
+            for d in shadow.decks.all_names_and_ids()
+            if d.name != "Default" and d.name not in master_names
+        ]
+        pull_decks = sorted(set(routed) | set(server_only))
+        sfps = state.fingerprints_for(shadow, pull_decks)
+        mnow = state.fingerprints_for(mw.col, pull_decks)
+        to_pull = set(_changed(sfps, dstate, "s", pull_decks, use_fp))
         # Mirror of the push-side straggler fix: pull any deck the shadow (server)
-        # now holds more cards for than the master does.
-        to_pull |= {d for d in routed if sfps[d][0] > mnow[d][0]}
+        # now holds more cards for than the master does (covers server-only decks,
+        # whose master count is 0).
+        to_pull |= {d for d in pull_decks if sfps[d][0] > mnow[d][0]}
         to_pull = sorted(to_pull)
         if to_pull:
             reporter.advance(f"{label}: pulling {_describe(to_pull)}…")
@@ -278,27 +291,30 @@ def sync_service(service: str, reporter: Reporter) -> dict:
             reporter.advance(f"{label}: nothing to pull")
             pulled = 0
         # Carry the server's reviews onto the master's existing cards, for all
-        # routed decks (the import skips them; see the push side).
-        sched_pulled = sync_scheduling(shadow, mw.col, routed)
+        # pull decks (the import skips them; see the push side).
+        sched_pulled = sync_scheduling(shadow, mw.col, pull_decks)
         # Deletions the other way: a GUID converged last sync but now gone from the
         # shadow (which mirrors the server after the native sync above) was deleted
         # on the server → remove it from the master.
-        shadow_guids = deletions.routed_guids(shadow, routed)
+        shadow_guids = deletions.routed_guids(shadow, pull_decks)
         del_pulled = _propagate_deletions(
-            reporter, mw.col, prev_guids - shadow_guids, routed, label, "server"
+            reporter, mw.col, prev_guids - shadow_guids, pull_decks, label, "server"
         )
 
         # --- record converged baseline for next time -------------------------
-        final_m = state.fingerprints_for(mw.col, routed)
-        final_s = state.fingerprints_for(shadow, routed)
-        for name in routed:
+        # Over the union of push + pull decks, so freshly-imported server decks get
+        # a baseline (and aren't re-detected as changed next sync).
+        base_decks = sorted(set(routed) | set(pull_decks))
+        final_m = state.fingerprints_for(mw.col, base_decks)
+        final_s = state.fingerprints_for(shadow, base_decks)
+        for name in base_decks:
             dstate[name] = {"m": final_m[name], "s": final_s[name]}
         # Snapshot the GUIDs now present on BOTH sides — the converged set that the
         # next sync diffs against to detect deletions. Recompute post-delete so a
         # note removed this cycle isn't re-flagged next time.
         dstate["_guids"] = sorted(
-            deletions.routed_guids(mw.col, routed)
-            & deletions.routed_guids(shadow, routed)
+            deletions.routed_guids(mw.col, base_decks)
+            & deletions.routed_guids(shadow, base_decks)
         )
     finally:
         try:
