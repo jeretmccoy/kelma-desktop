@@ -33,7 +33,20 @@ def get() -> dict[str, Any]:
     cfg.setdefault("backup_before_sync", True)
     cfg.setdefault("deck_routing", {})
     cfg.setdefault("features", {})
+    # KelmaSync-only mode: hide every AnkiWeb surface (account, sync options,
+    # routing column). Off by default — the standalone plugin is dual-sync; the
+    # KelmaDesktop bundle turns this on so the app never references AnkiWeb.
+    cfg.setdefault("kelmasync_only", False)
     return cfg
+
+
+def kelmasync_only() -> bool:
+    return bool(get().get("kelmasync_only", False))
+
+
+def ui_services() -> tuple[str, ...]:
+    """Services the UI should expose — KelmaSync only in KelmaSync-only mode."""
+    return (consts.KELMA,) if kelmasync_only() else consts.SERVICES
 
 
 def save(cfg: dict[str, Any]) -> None:

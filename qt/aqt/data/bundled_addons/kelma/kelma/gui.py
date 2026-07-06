@@ -59,7 +59,7 @@ class SettingsDialog(QDialog):
         accounts = QGroupBox("Accounts")
         grid = QGridLayout(accounts)
         self._status = {}
-        for row, service in enumerate(consts.SERVICES):
+        for row, service in enumerate(config.ui_services()):
             grid.addWidget(QLabel(f"<b>{consts.SERVICE_LABEL[service]}</b>"), row, 0)
             status = QLabel()
             self._status[service] = status
@@ -125,12 +125,16 @@ class SettingsDialog(QDialog):
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self._refresh_pending)
         bar.addWidget(refresh)
-        for label, service, value in [
+        bulk_buttons = [
             ("All KelmaSync", consts.KELMA, True),
             ("Clear KelmaSync", consts.KELMA, False),
-            ("All AnkiWeb", consts.ANKIWEB, True),
-            ("Clear AnkiWeb", consts.ANKIWEB, False),
-        ]:
+        ]
+        if consts.ANKIWEB in config.ui_services():
+            bulk_buttons += [
+                ("All AnkiWeb", consts.ANKIWEB, True),
+                ("Clear AnkiWeb", consts.ANKIWEB, False),
+            ]
+        for label, service, value in bulk_buttons:
             b = QPushButton(label)
             b.clicked.connect(lambda _=False, s=service, v=value: self._bulk(s, v))
             bar.addWidget(b)
@@ -142,6 +146,8 @@ class SettingsDialog(QDialog):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        if consts.ANKIWEB not in config.ui_services():
+            self.table.setColumnHidden(_COL[consts.ANKIWEB], True)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -408,7 +414,7 @@ def _sync_menu() -> None:
     box.setContentsMargins(0, 8, 0, 4)
     box.setSpacing(0)
     box.addWidget(_brand_header("Kelma sync"))
-    for service in consts.SERVICES:
+    for service in config.ui_services():
         row = _AccountRow(
             _service_line_html(service, deck_names, cfg),
             lambda s=service: _on_account_click(s),
@@ -420,9 +426,14 @@ def _sync_menu() -> None:
     menu.addAction(wa)
     menu.addSeparator()
 
-    both = menu.addAction("Sync KelmaSync + AnkiWeb")
-    a_k = menu.addAction("Sync KelmaSync only")
-    a_w = menu.addAction("Sync AnkiWeb only")
+    aw = consts.ANKIWEB in config.ui_services()
+    both = a_w = None
+    if aw:
+        both = menu.addAction("Sync KelmaSync + AnkiWeb")
+        a_k = menu.addAction("Sync KelmaSync only")
+        a_w = menu.addAction("Sync AnkiWeb only")
+    else:
+        a_k = menu.addAction("Sync now")
     menu.addSeparator()
     a_set = menu.addAction("Settings && deck routing…")
 
@@ -435,11 +446,13 @@ def _sync_menu() -> None:
     if pending["login"] in consts.SERVICES:
         auth.login(pending["login"], on_success=_sync_menu)
         return
-    if chosen is both:
+    if chosen is None:
+        return  # menu dismissed
+    if both is not None and chosen is both:
         engine.dual_sync()
     elif chosen is a_k:
         engine.dual_sync(only=consts.KELMA)
-    elif chosen is a_w:
+    elif a_w is not None and chosen is a_w:
         engine.dual_sync(only=consts.ANKIWEB)
     elif chosen is a_set:
         SettingsDialog(mw).exec()
@@ -499,17 +512,20 @@ def _build_menu() -> None:
         menu.setIcon(branding.star_icon())
     mw.form.menuTools.addMenu(menu)
 
-    act_sync = QAction("Sync now (KelmaSync + AnkiWeb)", mw)
-    act_sync.triggered.connect(lambda: engine.dual_sync())
-    menu.addAction(act_sync)
+    aw = consts.ANKIWEB in config.ui_services()
+    if aw:
+        act_sync = QAction("Sync now (KelmaSync + AnkiWeb)", mw)
+        act_sync.triggered.connect(lambda: engine.dual_sync())
+        menu.addAction(act_sync)
 
-    act_kelma = QAction("Sync KelmaSync only", mw)
+    act_kelma = QAction("Sync now" if not aw else "Sync KelmaSync only", mw)
     act_kelma.triggered.connect(lambda: engine.dual_sync(only=consts.KELMA))
     menu.addAction(act_kelma)
 
-    act_ankiweb = QAction("Sync AnkiWeb only", mw)
-    act_ankiweb.triggered.connect(lambda: engine.dual_sync(only=consts.ANKIWEB))
-    menu.addAction(act_ankiweb)
+    if aw:
+        act_ankiweb = QAction("Sync AnkiWeb only", mw)
+        act_ankiweb.triggered.connect(lambda: engine.dual_sync(only=consts.ANKIWEB))
+        menu.addAction(act_ankiweb)
 
     menu.addSeparator()
 
