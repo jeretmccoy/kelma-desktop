@@ -1,14 +1,14 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
-"""KelmaDesktop theme — light/dark, both Kelma-branded.
+"""KelmaDesktop theme.
 
-- Dark mode uses the exact KelmaMobile palette (warm near-black + gold).
-- Light mode uses a matching warm-cream + gold variant.
+- Dark mode: stock Anki palette (no override).
+- Light mode: a Kelma warm-cream + gold theme.
 
-Follows the user's chosen theme (no forcing). Green stays the brand/logo; gold is
-the interactive accent; semantic card-state colors (new/learning/review) are left
-alone. Applied via `!important` webview vars + the native `style_did_init` hook,
-and re-rendered on theme switch. All best-effort.
+Follows the user's chosen theme. Gold is the interactive accent; semantic
+card-state colors (new/learning/review) are left alone. The light theme is
+applied via `!important` webview vars + the native `style_did_init` hook, and
+re-rendered on theme switch. All best-effort.
 """
 
 from __future__ import annotations
@@ -51,6 +51,9 @@ def _pal() -> dict:
 
 
 def _css() -> str:
+    # Dark mode = stock Anki palette; only light mode gets the Kelma theme.
+    if theme_manager.night_mode:
+        return ""
     p = _pal()
     return f"""
 <style id="kelma-theme">
@@ -83,6 +86,8 @@ a:hover {{ color: {GOLD} !important; }}
 
 
 def _qss() -> str:
+    if theme_manager.night_mode:
+        return ""
     p = _pal()
     return f"""
 /* KelmaDesktop native accents */
@@ -98,6 +103,8 @@ QProgressBar::chunk {{ background-color: {GOLD}; }}
 
 
 def _on_webview(web_content, context) -> None:
+    if theme_manager.night_mode:
+        return  # stock Anki dark
     try:
         web_content.head += _css()
         if type(context).__name__ in ("Toolbar", "TopToolbar"):
