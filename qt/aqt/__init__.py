@@ -311,9 +311,11 @@ class AnkiApp(QApplication):
 
     appMsg = pyqtSignal(str)
 
+    # KelmaDesktop: a distinct single-instance key (prefix "kelma") so it doesn't
+    # collide with a stock Anki install — both can run at the same time.
     KEY = (
         os.environ.get("ANKI_SINGLE_INSTANCE_KEY")
-        or f"anki{checksum(getpass.getuser())}"
+        or f"kelma{checksum(getpass.getuser())}"
     )
     TMOUT = 30000
 

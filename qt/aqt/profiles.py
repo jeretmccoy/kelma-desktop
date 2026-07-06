@@ -366,19 +366,22 @@ class ProfileManager:
 
     @staticmethod
     def _default_base() -> str:
+        # KelmaDesktop uses its own base folder ("Kelma2") so it runs fully
+        # independently of a stock Anki install (separate profiles, collection,
+        # add-ons, and single-instance lock) — the two can be used side by side.
         if is_win:
             from aqt.winpaths import get_appdata
 
-            return os.path.join(get_appdata(), "Anki2")
+            return os.path.join(get_appdata(), "Kelma2")
         elif is_mac:
-            return os.path.expanduser("~/Library/Application Support/Anki2")
+            return os.path.expanduser("~/Library/Application Support/Kelma2")
         else:
             dataDir = os.environ.get(
                 "XDG_DATA_HOME", os.path.expanduser("~/.local/share")
             )
             if not os.path.exists(dataDir):
                 os.makedirs(dataDir)
-            return os.path.join(dataDir, "Anki2")
+            return os.path.join(dataDir, "Kelma2")
 
     def _loadMeta(self, retrying: bool = False) -> LoadMetaResult:
         result = LoadMetaResult()
