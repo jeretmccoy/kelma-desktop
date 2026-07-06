@@ -54,11 +54,37 @@ GOLD_SOFT = "#dcc48f"
 GOLD_BRIGHT = "#ecd49a"
 ON_GOLD = "#17150f"
 
-# Modern system font stack — SF on macOS, Segoe on Windows, Roboto on Linux.
-FONT_STACK = (
-    '-apple-system, "SF Pro Display", "SF Pro Text", system-ui, '
-    '"Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
-)
+# Computer Modern (the classic TeX/LaTeX face), bundled under data/web/kelma.
+# Falls back to other serifs if the woff fails to load.
+FONT_STACK = '"Computer Modern Serif", Georgia, "Times New Roman", serif'
+
+_FONT_DIR = "/_anki/kelma/fonts"
+_FONT_FACES = f"""
+@font-face {{
+  font-family: 'Computer Modern Serif';
+  src: url('{_FONT_DIR}/cmunrm.woff') format('woff');
+  font-weight: normal; font-style: normal; font-display: swap;
+}}
+@font-face {{
+  font-family: 'Computer Modern Serif';
+  src: url('{_FONT_DIR}/cmunbx.woff') format('woff');
+  font-weight: bold; font-style: normal; font-display: swap;
+}}
+@font-face {{
+  font-family: 'Computer Modern Serif';
+  src: url('{_FONT_DIR}/cmunti.woff') format('woff');
+  font-weight: normal; font-style: italic; font-display: swap;
+}}
+@font-face {{
+  font-family: 'Computer Modern Serif';
+  src: url('{_FONT_DIR}/cmunbi.woff') format('woff');
+  font-weight: bold; font-style: italic; font-display: swap;
+}}
+"""
+
+
+def _font_face_css() -> str:
+    return _FONT_FACES
 
 
 def _pal() -> dict:
@@ -128,6 +154,7 @@ def _base_css() -> str:
     accent, _bright, _on, _tint = _accent()
     return (
         '<style id="kelma-theme">'
+        + _font_face_css()
         + _vars_css()
         + _scrollbar_css()
         + f"a:hover {{ color: {accent} !important; }}"
@@ -415,6 +442,164 @@ def _stats_css() -> str:
 }}
 .graph h1, .graph .title {{ letter-spacing: 0.01em; }}
 .range-box, .range-box-inner {{ border-radius: 12px !important; }}
+body {{ font-family: {FONT_STACK}; }}
+"""
+
+
+def _revlog_daily() -> list[dict]:
+    """Per-day review aggregates from the revlog: date (ordinal), total review
+    time (minutes), and review count. Used by the correlation scatter."""
+    import datetime
+    import time as _time
+    from collections import defaultdict
+
+    try:
+        rows = mw.col.db.all("select id, time from revlog")
+    except Exception:  # noqa: BLE001
+        return []
+    agg: dict = defaultdict(lambda: [0, 0])
+    for id_ms, t_ms in rows:
+        lt = _time.localtime((id_ms or 0) / 1000)
+        key = (lt.tm_year, lt.tm_mon, lt.tm_mday)
+        a = agg[key]
+        a[0] += 1
+        a[1] += t_ms or 0
+    out = []
+    for (y, m, d), (cnt, tms) in sorted(agg.items()):
+        dt = datetime.date(y, m, d)
+        out.append(
+            {"d": dt.toordinal(), "t": round(tms / 60000.0, 2), "n": cnt,
+             "label": dt.isoformat()}
+        )
+    return out
+
+
+def _scatter_js() -> str:
+    """Self-contained interactive correlation scatter injected into the stats
+    page: pick any of Date / Review time / Review total for each axis, see the
+    points and the Pearson correlation coefficient r."""
+    p = _pal()
+    accent, _bright, on_accent, _tint = _accent()
+    data_json = json.dumps(_revlog_daily())
+    # Colours passed through to the drawing code.
+    cfg = json.dumps({
+        "accent": accent, "onAccent": on_accent, "surface": p["surface"],
+        "fg": p["fg"], "faint": p["fg_faint"], "border": p["border"],
+        "grid": p["border_subtle"],
+    })
+    return (
+        "(function(){"
+        "if(!/graphs/.test(location.pathname))return;"
+        "if(document.getElementById('kelma-scatter'))return;"
+        "var DATA=" + data_json + ";var C=" + cfg + ";"
+        + _SCATTER_BODY +
+        "})();"
+    )
+
+
+# The DOM-building + drawing routine (kept as a constant so the f-string above
+# stays readable). Uses only DATA and C from the closure.
+_SCATTER_BODY = r"""
+var AX={
+  date:{label:'Date',get:function(p){return p.d;},tick:function(v){
+     var dt=new Date(0);dt.setUTCDate(Math.round(v)-719162);
+     return dt.toISOString().slice(0,10);}},
+  time:{label:'Review time (min)',get:function(p){return p.t;},tick:function(v){return (Math.round(v*10)/10);}},
+  total:{label:'Reviews',get:function(p){return p.n;},tick:function(v){return Math.round(v);}}
+};
+function pearson(xs,ys){
+  var n=xs.length;if(n<2)return NaN;
+  var sx=0,sy=0,sxx=0,syy=0,sxy=0;
+  for(var i=0;i<n;i++){var x=xs[i],y=ys[i];sx+=x;sy+=y;sxx+=x*x;syy+=y*y;sxy+=x*y;}
+  var cov=sxy-sx*sy/n,vx=sxx-sx*sx/n,vy=syy-sy*sy/n;
+  if(vx<=0||vy<=0)return NaN;
+  return cov/Math.sqrt(vx*vy);
+}
+var card=document.createElement('div');
+card.id='kelma-scatter';card.className='graph';
+card.style.cssText='background:'+C.surface+';border:1px solid '+C.border+
+ ';border-radius:16px;padding:1.1em 1.2em;margin:0.7em auto;max-width:60em;';
+var h=document.createElement('h1');h.textContent='Correlations';
+h.style.cssText='letter-spacing:.01em;margin:0 0 .2em;';
+card.appendChild(h);
+function mkSel(sel){var s=document.createElement('select');
+ s.style.cssText='margin:0 .5em;padding:4px 8px;border-radius:8px;border:1px solid '+C.border+
+  ';background:'+C.surface+';color:'+C.fg+';font:inherit;';
+ ['date','time','total'].forEach(function(k){var o=document.createElement('option');
+  o.value=k;o.textContent=AX[k].label;if(k===sel)o.selected=true;s.appendChild(o);});
+ return s;}
+var ctrl=document.createElement('div');
+ctrl.style.cssText='margin:.2em 0 .6em;color:'+C.faint+';font-size:.95em;';
+var xSel=mkSel('date'),ySel=mkSel('time');
+ctrl.appendChild(document.createTextNode('X: '));ctrl.appendChild(xSel);
+ctrl.appendChild(document.createTextNode('  Y: '));ctrl.appendChild(ySel);
+card.appendChild(ctrl);
+var W=680,H=380,PADL=64,PADB=48,PADT=16,PADR=20;
+var ns='http://www.w3.org/2000/svg';
+var svg=document.createElementNS(ns,'svg');
+svg.setAttribute('viewBox','0 0 '+W+' '+H);
+svg.style.cssText='width:100%;height:auto;max-width:'+W+'px;display:block;margin:0 auto;';
+card.appendChild(svg);
+var rLbl=document.createElement('div');
+rLbl.style.cssText='text-align:center;margin-top:.4em;font-size:1.05em;color:'+C.fg+';';
+card.appendChild(rLbl);
+function draw(){
+  while(svg.firstChild)svg.removeChild(svg.firstChild);
+  var ax=AX[xSel.value],ay=AX[ySel.value];
+  var xs=DATA.map(ax.get),ys=DATA.map(ay.get);
+  if(DATA.length<2){rLbl.textContent='Not enough review data yet.';return;}
+  var xmin=Math.min.apply(null,xs),xmax=Math.max.apply(null,xs);
+  var ymin=Math.min.apply(null,ys),ymax=Math.max.apply(null,ys);
+  if(xmax===xmin)xmax=xmin+1; if(ymax===ymin)ymax=ymin+1;
+  function sx(v){return PADL+(v-xmin)/(xmax-xmin)*(W-PADL-PADR);}
+  function sy(v){return H-PADB-(v-ymin)/(ymax-ymin)*(H-PADT-PADB);}
+  function line(x1,y1,x2,y2,col,w){var l=document.createElementNS(ns,'line');
+   l.setAttribute('x1',x1);l.setAttribute('y1',y1);l.setAttribute('x2',x2);l.setAttribute('y2',y2);
+   l.setAttribute('stroke',col);l.setAttribute('stroke-width',w||1);svg.appendChild(l);}
+  function txt(x,y,s,col,anchor){var t=document.createElementNS(ns,'text');
+   t.setAttribute('x',x);t.setAttribute('y',y);t.setAttribute('fill',col);
+   t.setAttribute('font-size','12');t.setAttribute('text-anchor',anchor||'middle');
+   t.textContent=s;svg.appendChild(t);}
+  // axes + gridlines/ticks
+  var i,frac,gv;
+  for(i=0;i<=4;i++){frac=i/4;
+    gv=xmin+frac*(xmax-xmin);line(sx(gv),PADT,sx(gv),H-PADB,C.grid,1);
+    txt(sx(gv),H-PADB+18,''+ax.tick(gv),C.faint,'middle');
+    gv=ymin+frac*(ymax-ymin);line(PADL,sy(gv),W-PADR,sy(gv),C.grid,1);
+    txt(PADL-8,sy(gv)+4,''+ay.tick(gv),C.faint,'end');
+  }
+  line(PADL,PADT,PADL,H-PADB,C.border,1.5);
+  line(PADL,H-PADB,W-PADR,H-PADB,C.border,1.5);
+  txt(W/2,H-8,ax.label,C.fg,'middle');
+  var yl=document.createElementNS(ns,'text');
+  yl.setAttribute('transform','translate(16,'+(H/2)+') rotate(-90)');
+  yl.setAttribute('fill',C.fg);yl.setAttribute('font-size','12');
+  yl.setAttribute('text-anchor','middle');yl.textContent=ay.label;svg.appendChild(yl);
+  // regression line
+  var r=pearson(xs,ys);
+  if(!isNaN(r)){
+    var n=xs.length,mx=xs.reduce(function(a,b){return a+b;},0)/n,
+        my=ys.reduce(function(a,b){return a+b;},0)/n,num=0,den=0;
+    for(i=0;i<n;i++){num+=(xs[i]-mx)*(ys[i]-my);den+=(xs[i]-mx)*(xs[i]-mx);}
+    if(den>0){var slope=num/den,b0=my-slope*mx;
+      var lx1=xmin,lx2=xmax,ly1=b0+slope*lx1,ly2=b0+slope*lx2;
+      ly1=Math.max(ymin,Math.min(ymax,ly1));ly2=Math.max(ymin,Math.min(ymax,ly2));
+      line(sx(lx1),sy(b0+slope*lx1),sx(lx2),sy(b0+slope*lx2),C.accent,2);}
+  }
+  // points
+  for(i=0;i<DATA.length;i++){var c=document.createElementNS(ns,'circle');
+   c.setAttribute('cx',sx(xs[i]));c.setAttribute('cy',sy(ys[i]));c.setAttribute('r',4);
+   c.setAttribute('fill',C.accent);c.setAttribute('fill-opacity','0.72');
+   var tt=document.createElementNS(ns,'title');
+   tt.textContent=DATA[i].label+'  ('+ax.label+': '+ax.tick(xs[i])+', '+ay.label+': '+ay.tick(ys[i])+')';
+   c.appendChild(tt);svg.appendChild(c);}
+  rLbl.innerHTML='Pearson correlation coefficient  <b style="color:'+C.accent+
+    '">r = '+(isNaN(r)?'—':r.toFixed(3))+'</b>  (n='+DATA.length+' days)';
+}
+xSel.addEventListener('change',draw);ySel.addEventListener('change',draw);
+var host=document.querySelector('.graphs-container,main,.container,body')||document.body;
+host.appendChild(card);
+draw();
 """
 
 
@@ -522,15 +707,22 @@ def _on_webview(web_content, context) -> None:
 
 def _on_page_style(webview) -> None:
     """Theme load_url pages (stats graphs, deck options, import …) that don't go
-    through webview_will_set_content — inject the palette + graph-card polish."""
+    through webview_will_set_content — inject the palette + graph-card polish,
+    and on the stats page add the Kelma correlation scatter."""
     try:
-        css = _vars_css() + _scrollbar_css() + _stats_css()
+        css = _font_face_css() + _vars_css() + _scrollbar_css() + _stats_css()
         payload = json.dumps(css)
         webview.eval(
             "(function(){var s=document.createElement('style');"
             "s.id='kelma-page';s.textContent=" + payload + ";"
             "document.head.appendChild(s);})();"
         )
+        try:
+            url = webview.page().url().toString()
+        except Exception:  # noqa: BLE001
+            url = ""
+        if "graphs" in url:
+            webview.eval(_scatter_js())
     except Exception:  # noqa: BLE001
         pass
 
