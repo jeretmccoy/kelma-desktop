@@ -248,7 +248,7 @@ def package(args: argparse.Namespace) -> None:
     )
     package_path = next((out_dir / "dist").iterdir())
     package_path.rename(
-        package_path.with_stem(f"anki-{version}{get_platform_suffix()}")
+        package_path.with_stem(f"kelma-{version}{get_platform_suffix()}")
     )
 
 
