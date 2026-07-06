@@ -1365,7 +1365,9 @@ title="{}" {}>{}</button>""".format(
         openLink(aqt.appDonate)
 
     def onDocumentation(self) -> None:
-        openHelp(HelpPage.INDEX)
+        # The stock Anki manual lives on docs.ankiweb.net; KelmaDesktop points its
+        # Documentation entry at the Kelma community forum instead.
+        openLink("https://kelma.tech/community")
 
     # legacy
 
@@ -1455,6 +1457,9 @@ title="{}" {}>{}</button>""".format(
         # Help
         qconnect(m.actionDocumentation.triggered, self.onDocumentation)
         qconnect(m.actionDonate.triggered, self.onDonate)
+        # KelmaDesktop doesn't solicit donations to Ankitects; the link also points
+        # at ankiweb.net, which the fork keeps no references to.
+        m.actionDonate.setVisible(False)
         qconnect(m.actionAbout.triggered, self.onAbout)
         m.actionAbout.setText(tr.qt_accel_about_mac())
 

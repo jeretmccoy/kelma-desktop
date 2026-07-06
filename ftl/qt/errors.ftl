@@ -1,4 +1,4 @@
--errors-support-site = [support site](https://help.ankiweb.net)
+-errors-support-site = [community forum](https://kelma.tech/community)
 errors-standard-popup2 =
     Kelma encountered a problem. Please follow the troubleshooting steps.
 errors-may-be-addon = The problem may be caused by an add-on.
