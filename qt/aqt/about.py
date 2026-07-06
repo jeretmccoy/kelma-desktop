@@ -66,8 +66,12 @@ def show(mw: aqt.AnkiQt) -> QDialog:
     # WebView contents
     ######################################################################
     abouttext = "<center><img src='/_anki/imgs/anki-logo-thin.png'></center>"
-    lede = tr.about_anki_is_a_friendly_intelligent_spaced().replace("Anki", "Anki®")
+    lede = tr.about_anki_is_a_friendly_intelligent_spaced().replace("Anki", "Kelma")
     abouttext += f"<p>{lede}"
+    abouttext += (
+        "<p>Kelma is an independent, open-source build based on Anki®, "
+        "by Ankitects Pty Ltd."
+    )
     abouttext += f"<p>{tr.about_anki_is_licensed_under_the_agpl3()}"
     abouttext += f"<p>{tr.about_version(val=version_with_build())}<br>"
     abouttext += ("Python %s Qt %s Chromium %s<br>") % (

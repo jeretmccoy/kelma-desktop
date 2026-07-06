@@ -120,7 +120,7 @@ deck-config-bury-interday-learning-tooltip =
     Whether other `learning` cards of the same note with intervals > 1 day
     will be delayed until the next day.
 deck-config-bury-priority-tooltip =
-    When Anki gathers cards, it first gathers intraday learning cards, then
+    When Kelma gathers cards, it first gathers intraday learning cards, then
     interday learning cards, then review cards, and finally new cards. This affects
     how burying works:
     
@@ -188,7 +188,7 @@ deck-config-review-sort-order-tooltip =
     sort orders preferable.
 
 deck-config-display-order-will-use-current-deck =
-    Anki will use the display order from the deck you 
+    Kelma will use the display order from the deck you 
     select to study, and not any subdecks it may have.
 
 ## Gather order and sort order of cards – Combobox entries
@@ -279,7 +279,7 @@ deck-config-wait-for-audio-tooltip-2 = Wait for audio to finish before automatic
 deck-config-audio-title = Audio
 deck-config-disable-autoplay = Don't play audio automatically
 deck-config-disable-autoplay-tooltip =
-    When enabled, Anki will not play audio automatically.
+    When enabled, Kelma will not play audio automatically.
     It can be played manually by clicking/tapping on an audio icon, or by using the Replay action.
 deck-config-skip-question-when-replaying = Skip question when replaying answer
 deck-config-always-include-question-audio-tooltip =
@@ -300,7 +300,7 @@ deck-config-easy-bonus-tooltip =
     it `Easy`.
 deck-config-interval-modifier-tooltip =
     This multiplier is applied to all reviews, and minor adjustments can be used
-    to make Anki more conservative or aggressive in its scheduling. Please see
+    to make Kelma more conservative or aggressive in its scheduling. Please see
     the manual before changing this option.
 deck-config-hard-interval-tooltip = The multiplier applied to a review interval when answering `Hard`.
 deck-config-new-interval-tooltip = The multiplier applied to a review interval when answering `Again`.
@@ -371,7 +371,7 @@ deck-config-reviews-too-low =
 deck-config-learning-step-above-graduating-interval = The graduating interval should be at least as long as your final learning step.
 deck-config-good-above-easy = The easy interval should be at least as long as the graduating interval.
 deck-config-relearning-steps-above-minimum-interval = The minimum lapse interval should be at least as long as your final relearning step.
-deck-config-maximum-answer-secs-above-recommended = Anki can schedule your reviews more efficiently when you keep each question short.
+deck-config-maximum-answer-secs-above-recommended = Kelma can schedule your reviews more efficiently when you keep each question short.
 deck-config-too-short-maximum-interval = A maximum interval less than 6 months is not recommended.
 deck-config-ignore-before-info = (Approximately) { $included }/{ $totalCards } cards will be used to optimize the FSRS parameters.
 
@@ -414,14 +414,14 @@ deck-config-reschedule-cards-on-change = Reschedule cards on change
 deck-config-fsrs-tooltip =
     Affects the entire collection.
 
-    The Free Spaced Repetition Scheduler (FSRS) is an alternative to Anki's legacy SuperMemo 2 (SM-2) algorithm.
+    The Free Spaced Repetition Scheduler (FSRS) is an alternative to Kelma's legacy SuperMemo 2 (SM-2) algorithm.
     By more accurately determining how likely you are to forget a card, it can help you remember
     more material in the same amount of time. This setting is shared by all presets.
 
 deck-config-desired-retention-tooltip =
-    By default, Anki schedules cards so that you have a 90% chance of remembering them when
-    they come up for review again. If you increase this value, Anki will show cards more frequently
-    to increase the chances of you remembering them. If you decrease the value, Anki will show cards
+    By default, Kelma schedules cards so that you have a 90% chance of remembering them when
+    they come up for review again. If you increase this value, Kelma will show cards more frequently
+    to increase the chances of you remembering them. If you decrease the value, Kelma will show cards
     less frequently, and you will forget more of them. Be conservative when adjusting this - higher
     values will greatly increase your workload, and lower values can be demoralizing when you forget
     a lot of material.
@@ -441,7 +441,7 @@ deck-config-historical-retention-tooltip =
     The latter is quite rare, so unless you're using the former option, you probably don't need to adjust
     this option.
 deck-config-weights-tooltip2 =
-    FSRS parameters affect how cards are scheduled. Anki will start with default parameters. You can use 
+    FSRS parameters affect how cards are scheduled. Kelma will start with default parameters. You can use 
     the option below to optimize the parameters to best match your performance in decks using this preset.
 deck-config-reschedule-cards-on-change-tooltip =
     Affects the entire collection, and is not saved.
@@ -572,7 +572,7 @@ deck-config-bury-tooltip =
     other cloze deletions from the same text).
     
     When this option is off, multiple cards from the same note may be seen on the same
-    day. When enabled, Anki will automatically *bury* siblings, hiding them until the next
+    day. When enabled, Kelma will automatically *bury* siblings, hiding them until the next
     day. This option allows you to choose which kinds of cards may be buried when you answer
     one of their siblings.
     
@@ -596,11 +596,11 @@ deck-config-health-check-tooltip2 = Health check is performed only when using Op
 deck-config-compute-optimal-retention = Compute minimum recommended retention
 deck-config-predicted-optimal-retention = Minimum recommended retention: { $num }
 deck-config-weights-tooltip =
-    FSRS parameters affect how cards are scheduled. Anki will start with default parameters. Once
+    FSRS parameters affect how cards are scheduled. Kelma will start with default parameters. Once
     you've accumulated 1000+ reviews, you can use the option below to optimize the parameters to best
     match your performance in decks using this preset.
 deck-config-compute-optimal-weights-tooltip =
-    Once you've done 1000+ reviews in Anki, you can use the Optimize button to analyze your review history,
+    Once you've done 1000+ reviews in Kelma, you can use the Optimize button to analyze your review history,
     and automatically generate parameters that are optimal for your memory and the content you're studying.
     If you have decks that vary wildly in difficulty, it is recommended to assign them separate presets, as
     the parameters for easy decks and hard decks will be different. There is no need to optimize your parameters
@@ -625,6 +625,6 @@ deck-config-compute-optimal-retention-tooltip3 =
 deck-config-seconds-to-show-question-tooltip-2 = When auto advance is activated, the number of seconds to wait before revealing the answer. Set to 0 to disable.
 deck-config-invalid-weights = Parameters must be either left blank to use the defaults, or must be 17 comma-separated numbers.
 deck-config-fsrs-on-all-clients =
-    Please ensure all of your Anki clients are Anki(Mobile) 23.10+ or AnkiDroid 2.17+. FSRS will
+    Please ensure all of your Kelma clients are Kelma(Mobile) 23.10+ or AnkiDroid 2.17+. FSRS will
     not work correctly if one of your clients is older.
 deck-config-optimize-all-tip = You can optimize all presets at once by using the dropdown button next to "Save".

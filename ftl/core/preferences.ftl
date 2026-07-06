@@ -1,7 +1,7 @@
 preferences-automatically-sync-on-profile-openclose = Automatically sync on profile open/close
 preferences-backups = Backups
 preferences-change-deck-depending-on-note-type = Change deck depending on note type
-preferences-changes-will-take-effect-when-you = Changes will take effect when you restart Anki.
+preferences-changes-will-take-effect-when-you = Changes will take effect when you restart Kelma.
 preferences-hours-past-midnight = hours past midnight
 preferences-language = Language
 preferences-interrupt-current-audio-when-answering = Interrupt current audio when answering
@@ -9,14 +9,14 @@ preferences-learn-ahead-limit = Learn ahead limit
 preferences-mins = mins
 preferences-network = Syncing
 preferences-next-day-starts-at = Next day starts at
-preferences-media-is-not-backed-up = Media is not backed up. Please create a periodic backup of your Anki folder to be safe.
+preferences-media-is-not-backed-up = Media is not backed up. Please create a periodic backup of your Kelma folder to be safe.
 preferences-on-next-sync-force-changes-in = On next sync, force changes in one direction
 preferences-paste-clipboard-images-as-png = Paste clipboard images as PNG
 preferences-paste-without-shift-key-strips-formatting = Paste without shift key strips formatting
 preferences-generate-latex-images-automatically = Generate LaTeX images (security risk)
 preferences-latex-generation-disabled = LaTeX image generation is disabled in the preferences.
 preferences-periodically-sync-media = Periodically sync media
-preferences-please-restart-anki-to-complete-language = Please restart Anki to complete language change.
+preferences-please-restart-anki-to-complete-language = Please restart Kelma to complete language change.
 preferences-preferences = Preferences
 preferences-scheduling = Scheduling
 preferences-show-learning-cards-with-larger-steps = Show learning cards with larger steps before reviews
@@ -24,7 +24,7 @@ preferences-show-next-review-time-above-answer = Show next review time above ans
 preferences-spacebar-rates-card = Spacebar (or enter) also answers card
 preferences-show-play-buttons-on-cards-with = Show play buttons on cards with audio
 preferences-show-remaining-card-count = Show remaining card count
-preferences-some-settings-will-take-effect-after = Some settings will take effect after you restart Anki.
+preferences-some-settings-will-take-effect-after = Some settings will take effect after you restart Kelma.
 preferences-tab-synchronisation = Synchronization
 preferences-synchronize-audio-and-images-too = Synchronize audio and images too
 preferences-login-successful-sync-now = Log-in successful. Save preferences and sync now?
@@ -45,8 +45,8 @@ preferences-check-for-updates = Check for program updates
 preferences-check-for-addon-updates = Check for add-on updates
 preferences-ignore-accents-in-search = Ignore accents in search (slower)
 preferences-backup-explanation =
-    Anki periodically backs up your collection. After backups are more than 2 days old,
-    Anki will start removing some of them to free up disk space.
+    Kelma periodically backs up your collection. After backups are more than 2 days old,
+    Kelma will start removing some of them to free up disk space.
 preferences-daily-backups = Daily backups to keep:
 preferences-weekly-backups = Weekly backups to keep:
 preferences-monthly-backups = Monthly backups to keep:
@@ -83,7 +83,7 @@ preferences-third-party-services = Third-Party Services
 preferences-ankihub-not-logged-in = Not currently logged in to AnkiHub.
 preferences-ankiweb-intro = AnkiWeb is a free service that lets you keep your flashcard data in sync across your devices, and provides a way to recover the data if your device breaks or is lost.
 preferences-ankihub-intro = AnkiHub provides collaborative deck editing and additional study tools. A paid subscription is required to access certain features.
-preferences-third-party-description = Third-party services are unaffiliated with and not endorsed by Anki. Use of these services may require payment.
+preferences-third-party-description = Third-party services are unaffiliated with and not endorsed by Kelma. Use of these services may require payment.
 
 ## URL scheme related
 preferences-url-schemes = URL Schemes

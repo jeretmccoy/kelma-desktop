@@ -6,7 +6,7 @@ importing-allow-html-in-fields = Allow HTML in fields
 importing-anki-files-are-from-a-very = .anki files are from a very old version of Anki. You can import them with add-on 175027074 or with Anki 2.0, available on the Anki website.
 importing-anki2-files-are-not-directly-importable = .anki2 files are not directly importable - please import the .apkg or .zip file you have received instead.
 importing-appeared-twice-in-file = Appeared twice in file: { $val }
-importing-by-default-anki-will-detect-the = By default, Anki will detect the character between fields, such as a tab, comma, and so on. If Anki is detecting the character incorrectly, you can enter it here. Use \t to represent tab.
+importing-by-default-anki-will-detect-the = By default, Kelma will detect the character between fields, such as a tab, comma, and so on. If Kelma is detecting the character incorrectly, you can enter it here. Use \t to represent tab.
 importing-cannot-merge-notetypes-of-different-kinds =
     Cloze note types cannot be merged with regular note types.
     You may still import the file with '{ importing-merge-notetypes }' disabled.
@@ -37,7 +37,7 @@ importing-mapped-to-tags = mapped to <b>Tags</b>
 # the action of combining two existing note types to create a new one
 importing-merge-notetypes = Merge note types
 importing-merge-notetypes-help =
-    If checked, and you or the deck author altered the schema of a note type, Anki will
+    If checked, and you or the deck author altered the schema of a note type, Kelma will
     merge the two versions instead of keeping both.
     
     Altering a note type's schema means adding, removing, or reordering fields or templates,
@@ -65,7 +65,7 @@ importing-include-reviews-help =
 importing-with-deck-configs-help =
     If enabled, any deck options that the deck sharer included will also be imported.
     Otherwise, all decks will be assigned the default preset.
-importing-packaged-anki-deckcollection-apkg-colpkg-zip = Packaged Anki Deck/Collection (*.apkg *.colpkg *.zip)
+importing-packaged-anki-deckcollection-apkg-colpkg-zip = Packaged Kelma Deck/Collection (*.apkg *.colpkg *.zip)
 # the '|' character
 importing-pipe = Pipe
 # Warning displayed when the csv import preview table is clipped (some columns were hidden)
@@ -219,7 +219,7 @@ importing-field-separator-help =
     do this automatically.
 
     It cannot be changed if the text file forces use of a specific separator via a file header.
-    If a file header is not present, Anki will try to guess what the separator is.
+    If a file header is not present, Kelma will try to guess what the separator is.
 importing-allow-html-in-fields-help =
     Enable this if the file contains HTML formatting. E.g. if the file contains the string
     '&lt;br&gt;', it will appear as a line break on your card. On the other hand, with this

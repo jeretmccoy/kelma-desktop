@@ -23,7 +23,7 @@
    </size>
   </property>
   <property name="windowTitle">
-   <string notr="true">Anki</string>
+   <string notr="true">Kelma</string>
   </property>
   <property name="windowIcon">
    <iconset resource="icons.qrc">

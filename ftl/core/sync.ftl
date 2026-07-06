@@ -19,20 +19,20 @@ sync-media-log-title = Media Sync Log
 
 ## Error messages / dialogs
 
-sync-conflict = Only one copy of Anki can sync to your account at once. Please wait a few minutes, then try again.
+sync-conflict = Only one copy of Kelma can sync to your account at once. Please wait a few minutes, then try again.
 sync-server-error = AnkiWeb encountered a problem. Please try again in a few minutes.
 sync-client-too-old = Your Anki version is too old. Please update to the latest version to continue syncing.
 sync-wrong-pass = Email or password was incorrect; please try again.
 sync-resync-required = Please sync again. If this message keeps appearing, please post on the support site.
-sync-must-wait-for-end = Anki is currently syncing. Please wait for the sync to complete, then try again.
+sync-must-wait-for-end = Kelma is currently syncing. Please wait for the sync to complete, then try again.
 sync-confirm-empty-download = Local collection has no cards. Download from AnkiWeb?
 sync-confirm-empty-upload = AnkiWeb collection has no cards. Replace it with local collection?
 sync-conflict-explanation =
     Your decks here and on AnkiWeb differ in such a way that they can't be merged together, so it's necessary to overwrite the decks on one side with the decks from the other.
     
-    If you choose download, Anki will fetch the collection from AnkiWeb, and any changes you have made on this device since the last sync will be lost.
+    If you choose download, Kelma will fetch the collection from AnkiWeb, and any changes you have made on this device since the last sync will be lost.
     
-    If you choose upload, Anki will send this device's data to AnkiWeb, and any changes that are waiting on AnkiWeb will be lost.
+    If you choose upload, Kelma will send this device's data to AnkiWeb, and any changes that are waiting on AnkiWeb will be lost.
     
     After all devices are in sync, future reviews and added cards can be merged automatically.
 sync-conflict-explanation2 =

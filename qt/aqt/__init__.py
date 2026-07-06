@@ -688,8 +688,8 @@ def _run(argv: list[str] | None = None, exec: bool = True) -> AnkiApp | None:
         os.environ["QT_QPA_PLATFORM"] = "windows:altgr"
 
     # create the app
-    QCoreApplication.setApplicationName("Anki")
-    QGuiApplication.setDesktopFileName("anki")
+    QCoreApplication.setApplicationName("Kelma")
+    QGuiApplication.setDesktopFileName("kelma")
     app = AnkiApp(argv)
     if app.secondInstance():
         # we've signaled the primary instance, so we should close

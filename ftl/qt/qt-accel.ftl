@@ -1,5 +1,5 @@
 qt-accel-about = &About
-qt-accel-about-mac = About Anki...
+qt-accel-about-mac = About Kelma...
 qt-accel-cards = &Cards
 qt-accel-check-database = &Check Database
 qt-accel-check-media = Check &Media
@@ -25,7 +25,7 @@ qt-accel-preferences = &Preferences
 qt-accel-previous-card = &Previous Card
 qt-accel-select-all = Select &All
 qt-accel-select-notes = Select &Notes
-qt-accel-support-anki = &Support Anki
+qt-accel-support-anki = &Support Kelma
 qt-accel-switch-profile = &Switch Profile
 qt-accel-tools = &Tools
 qt-accel-undo = &Undo
