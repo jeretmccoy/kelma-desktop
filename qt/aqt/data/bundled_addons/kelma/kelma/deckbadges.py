@@ -97,7 +97,7 @@ def _badges(did: int, name: str, pending: dict) -> str:
     services = config.services_for_deck(name)
     k, w = _deck_clouds(name)
     spans = []
-    for s in consts.SERVICES:
+    for s in config.ui_services():
         if s not in services or not config.has_credentials(s):
             continue
         added, changed = pending[s].get(did, (0, 0))
@@ -198,7 +198,7 @@ def _size_str(service: str) -> str:
 
 def _sizes_html(totals: dict) -> str:
     parts = []
-    for s in consts.SERVICES:
+    for s in config.ui_services():
         if not config.has_credentials(s):
             continue
         parts.append(
@@ -216,9 +216,9 @@ def _on_render(deck_browser, content) -> None:
     try:
         if not features.enabled("deck_badges"):
             return
-        if not any(config.has_credentials(s) for s in consts.SERVICES):
+        if not any(config.has_credentials(s) for s in config.ui_services()):
             return
-        pending = {s: state.pending_by_did(mw.col, s) for s in consts.SERVICES}
+        pending = {s: state.pending_by_did(mw.col, s) for s in config.ui_services()}
         names = {d.id: d.name for d in mw.col.decks.all_names_and_ids()}
 
         # Per-cloud "size" = total cards across the decks routed to that cloud.
@@ -228,7 +228,7 @@ def _on_render(deck_browser, content) -> None:
                 "select did, count(*) from cards group by did"
             )
         }
-        totals = {s: 0 for s in consts.SERVICES}
+        totals = {s: 0 for s in config.ui_services()}
         for did, name in names.items():
             cnt = did_counts.get(did, 0)
             for s in config.services_for_deck(name):

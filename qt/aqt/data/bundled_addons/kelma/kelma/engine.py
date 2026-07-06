@@ -41,10 +41,11 @@ def dual_sync(
 
     if not order:
         what = consts.SERVICE_LABEL.get(only, "any service") if only else "anything"
+        services = " or ".join(consts.SERVICE_LABEL[s] for s in config.ui_services())
         showWarning(
             f"Kelma: nothing to sync to {what}.\n\n"
             "Open Tools → Kelma → Settings to log in and route at least one deck "
-            "to KelmaSync and/or AnkiWeb."
+            f"to {services}."
         )
         if on_done:
             on_done()

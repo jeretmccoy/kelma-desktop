@@ -31,7 +31,7 @@ FEATURES: list[Feature] = [
     Feature(
         key="deck_badges",
         label="Deck sync badges",
-        description="Show each deck's KelmaSync/AnkiWeb sync state on the deck list.",
+        description="Show each deck's sync state on the deck list.",
         default=True,
     ),
     Feature(

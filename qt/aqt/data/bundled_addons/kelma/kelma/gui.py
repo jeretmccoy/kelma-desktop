@@ -80,9 +80,9 @@ class SettingsDialog(QDialog):
         self.block_cb = QCheckBox("Block Anki's own sync")
         self.block_cb.setChecked(cfg.get("block_native_sync", True))
         self.block_cb.setToolTip(
-            "Stop Anki from syncing your main collection to AnkiWeb directly "
-            "(auto-sync, the Sync button, the Y shortcut). Only Kelma's shadows "
-            "write to AnkiWeb — prevents conflicting double-syncs."
+            "Stop Anki from syncing your main collection on its own "
+            "(auto-sync, the Sync button, the Y shortcut). Only Kelma's shadow "
+            "collections sync — prevents conflicting double-syncs."
         )
         opts.addWidget(self.enabled_cb)
         opts.addWidget(self.media_cb)
