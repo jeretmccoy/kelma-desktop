@@ -314,28 +314,51 @@ body {{ font-family: {FONT_STACK}; }}
   box-shadow: 0 4px 12px rgba(0,0,0,0.18);
 }}
 {ease_rules}
-/* Show Answer — the primary action, a gold pill. */
-#ansbut {{
+/* Show Answer — the primary action, a gold pill. Selector must out-specify
+   `#middle button` above (which also carries !important), so qualify it. */
+#middle button#ansbut, button#ansbut {{
   background: {grad} !important;
   color: {on_accent} !important;
   border: none !important;
   border-radius: 999px !important;
-  padding: 11px 40px !important;
+  padding: 11px 44px !important;
+  min-width: 200px !important;
   font-weight: 700 !important;
   letter-spacing: 0.01em;
   box-shadow: 0 6px 18px rgba(201, 172, 107, 0.34) !important;
 }}
-#ansbut:hover {{ transform: translateY(-2px); }}
+#middle button#ansbut:hover, button#ansbut:hover {{ transform: translateY(-2px); }}
 .nobold, .stattxt {{ color: {p['fg_faint']} !important; }}
 </style>
 """
 
 
 def _reviewer_css() -> str:
-    """Subtle polish on the study card frame — never touches user card CSS."""
+    """Study card polish: refined default typography, smaller default images,
+    and a soft gold Q/A divider. Uses gentle defaults (no !important on type)
+    so custom note styling still wins, and caps image size sensibly."""
+    p = _pal()
     accent, bright, _on, _tint = _accent()
     return f"""
 <style id="kelma-reviewer">
+/* Refined default typography — a note type's own CSS still overrides this. */
+.card {{
+  font-family: {FONT_STACK};
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  letter-spacing: 0.005em;
+}}
+/* Comfortable reading measure so long text isn't edge-to-edge. */
+#qa, .card {{ max-width: 780px; margin-left: auto; margin-right: auto; }}
+/* Smaller images by default — capped height, centered, softly rounded.
+   A note that sets its own image size overrides these. */
+.card img {{
+  max-width: 88%;
+  max-height: 42vh;
+  height: auto;
+  border-radius: 10px;
+}}
 /* Q/A divider as a soft gold gradient hairline instead of a hard rule. */
 hr#answer {{
   border: none !important;
