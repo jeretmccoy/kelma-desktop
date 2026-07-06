@@ -338,7 +338,7 @@ def _reviewer_css() -> str:
     and a soft gold Q/A divider. Uses gentle defaults (no !important on type)
     so custom note styling still wins, and caps image size sensibly."""
     p = _pal()
-    accent, bright, _on, _tint = _accent()
+    accent, bright, on_accent, _tint = _accent()
     return f"""
 <style id="kelma-reviewer">
 /* Refined default typography — a note type's own CSS still overrides this. */
@@ -359,6 +359,29 @@ def _reviewer_css() -> str:
   height: auto;
   border-radius: 10px;
 }}
+/* Audio replay button: a centered gold circular control on its own row,
+   instead of a stock white circle stranded wherever the [sound:] tag sits. */
+.replay-button {{
+  display: flex !important;
+  width: -webkit-fit-content !important;
+  width: fit-content !important;
+  margin: 16px auto !important;
+  cursor: pointer;
+}}
+.replay-button svg {{
+  width: 50px !important;
+  height: 50px !important;
+  border-radius: 50%;
+  box-shadow: 0 4px 12px rgba(201, 172, 107, 0.30);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}}
+.replay-button svg circle {{ fill: {accent} !important; stroke: none !important; }}
+.replay-button svg path {{ fill: {on_accent} !important; }}
+.replay-button:hover svg {{
+  transform: scale(1.08);
+  box-shadow: 0 6px 18px rgba(201, 172, 107, 0.45);
+}}
+.replay-button:active svg {{ transform: scale(0.96); }}
 /* Q/A divider as a soft gold gradient hairline instead of a hard rule. */
 hr#answer {{
   border: none !important;
