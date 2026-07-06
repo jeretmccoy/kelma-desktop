@@ -45,7 +45,7 @@ _CSS = f"""
   --fg-subtle: {FG_SUBTLE} !important;
   --fg-faint: {FG_FAINT} !important;
   --fg-disabled: {FG_FAINT} !important;
-  --fg-link: {GOLD_SOFT} !important;
+  --fg-link: {FG} !important;
   --border: {BORDER} !important;
   --border-subtle: {BORDER_SUBTLE} !important;
   --border-strong: {BORDER} !important;
@@ -57,7 +57,7 @@ _CSS = f"""
   --highlight-bg: {GOLD} !important;
   --highlight-fg: {ON_GOLD} !important;
 }}
-a, a:visited {{ color: {GOLD_SOFT} !important; }}
+a:hover {{ color: {GOLD} !important; }}
 </style>
 """
 
@@ -79,7 +79,12 @@ def _on_webview(web_content, context) -> None:
         web_content.head += _CSS
         if type(context).__name__ in ("Toolbar", "TopToolbar"):
             web_content.head += (
-                f"<style>body {{ border-bottom: 2px solid {GOLD} !important; }}</style>"
+                "<style>"
+                f"body {{ border-bottom: 2px solid {GOLD} !important; }}"
+                # Nav items are warm-white; gold on hover / active only.
+                f".hitem {{ color: {FG} !important; }}"
+                f".hitem:hover {{ color: {GOLD} !important; }}"
+                "</style>"
             )
     except Exception:  # noqa: BLE001
         pass
