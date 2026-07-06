@@ -54,9 +54,16 @@ GOLD_SOFT = "#dcc48f"
 GOLD_BRIGHT = "#ecd49a"
 ON_GOLD = "#17150f"
 
-# Computer Modern (the classic TeX/LaTeX face), bundled under data/web/kelma.
-# Falls back to other serifs if the woff fails to load.
-FONT_STACK = '"Computer Modern Serif", Georgia, "Times New Roman", serif'
+# Default UI font — a modern system sans stack (cards, deck list, toolbar,
+# reviewer). SF on macOS, Segoe on Windows, Roboto on Linux.
+FONT_STACK = (
+    '-apple-system, "SF Pro Display", "SF Pro Text", system-ui, '
+    '"Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+)
+
+# Computer Modern (the classic TeX/LaTeX face), bundled under data/web/kelma —
+# used ONLY on the statistics page. Falls back to other serifs if unavailable.
+STATS_FONT = '"Computer Modern Serif", Georgia, "Times New Roman", serif'
 
 _FONT_DIR = "/_anki/kelma/fonts"
 _FONT_FACES = f"""
@@ -154,7 +161,6 @@ def _base_css() -> str:
     accent, _bright, _on, _tint = _accent()
     return (
         '<style id="kelma-theme">'
-        + _font_face_css()
         + _vars_css()
         + _scrollbar_css()
         + f"a:hover {{ color: {accent} !important; }}"
@@ -442,7 +448,6 @@ def _stats_css() -> str:
 }}
 .graph h1, .graph .title {{ letter-spacing: 0.01em; }}
 .range-box, .range-box-inner {{ border-radius: 12px !important; }}
-body {{ font-family: {FONT_STACK}; }}
 """
 
 
@@ -710,7 +715,7 @@ def _on_page_style(webview) -> None:
     through webview_will_set_content — inject the palette + graph-card polish,
     and on the stats page add the Kelma correlation scatter."""
     try:
-        css = _font_face_css() + _vars_css() + _scrollbar_css() + _stats_css()
+        css = _vars_css() + _scrollbar_css() + _stats_css()
         payload = json.dumps(css)
         webview.eval(
             "(function(){var s=document.createElement('style');"
@@ -722,6 +727,15 @@ def _on_page_style(webview) -> None:
         except Exception:  # noqa: BLE001
             url = ""
         if "graphs" in url:
+            # Statistics page only: Computer Modern typography + the scatter.
+            font_css = json.dumps(
+                _font_face_css() + f"body {{ font-family: {STATS_FONT}; }}"
+            )
+            webview.eval(
+                "(function(){var s=document.createElement('style');"
+                "s.id='kelma-stats-font';s.textContent=" + font_css + ";"
+                "document.head.appendChild(s);})();"
+            )
             webview.eval(_scatter_js())
     except Exception:  # noqa: BLE001
         pass
