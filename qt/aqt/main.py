@@ -1005,12 +1005,19 @@ title="{}" {}>{}</button>""".format(
             self.installAddon(args[0], startup=True)
 
         if not self.safeMode:
-            # KelmaDesktop: install/update the bundled Kelma add-on before load.
+            # KelmaDesktop: install/update the bundled Kelma add-on before load,
+            # and apply the Kelma green theme.
             try:
                 from aqt._kelma_bundled import sync_bundled_addon
 
                 sync_bundled_addon(self)
             except Exception:  # noqa: BLE001 - never block startup
+                pass
+            try:
+                from aqt import _kelma_style
+
+                _kelma_style.setup()
+            except Exception:  # noqa: BLE001
                 pass
             self.addonManager.loadAddons()
 
