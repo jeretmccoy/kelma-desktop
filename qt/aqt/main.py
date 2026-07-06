@@ -1006,7 +1006,7 @@ title="{}" {}>{}</button>""".format(
 
         if not self.safeMode:
             # KelmaDesktop: install/update the bundled Kelma add-on before load,
-            # and apply the Kelma green theme.
+            # and apply the Kelma warm-gold theme (light + dark).
             try:
                 from aqt._kelma_bundled import sync_bundled_addon
 
