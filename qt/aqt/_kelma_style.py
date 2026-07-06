@@ -19,12 +19,12 @@ from aqt.theme import theme_manager
 
 # KelmaMobile palette, shifted to a warm charcoal (no green/olive cast — the
 # darks keep R >= G >= B so they read neutral-warm and pair with the gold).
-CANVAS = "#100f0d"
-CANVAS_INSET = "#0a0908"
-SURFACE = "#1c1a17"
-ELEVATED = "#262219"
-BORDER = "#3d382e"
-BORDER_SUBTLE = "#2b2721"
+CANVAS = "#1a1815"
+CANVAS_INSET = "#131110"
+SURFACE = "#26231e"
+ELEVATED = "#322d24"
+BORDER = "#4a4438"
+BORDER_SUBTLE = "#37322a"
 FG = "#f4f1e7"
 FG_SUBTLE = "#b0ada3"
 FG_FAINT = "#7d7a70"
