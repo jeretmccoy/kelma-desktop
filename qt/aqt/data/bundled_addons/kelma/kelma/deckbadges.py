@@ -248,8 +248,12 @@ def _on_render(deck_browser, content) -> None:
             return m.group(1)[:-1] + ' style="display:none">'
 
         tree = _LINK_RE.sub(repl, content.tree)
-        tree = _ROW_RE.sub(hide_repl, tree)
-        content.tree = _STYLE + _sizes_html(totals) + _filter_bar() + tree
+        if config.kelmasync_only():
+            # One sync target — no per-cloud filter or deck hiding.
+            content.tree = _STYLE + _sizes_html(totals) + tree
+        else:
+            tree = _ROW_RE.sub(hide_repl, tree)
+            content.tree = _STYLE + _sizes_html(totals) + _filter_bar() + tree
     except Exception:  # noqa: BLE001 - never break the deck list over a badge
         pass
 
