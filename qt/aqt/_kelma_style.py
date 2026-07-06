@@ -152,7 +152,9 @@ body {{ font-family: {FONT_STACK}; margin: 2.4em 1em 1em 1em; }}
   background: {p['surface']} !important;
   padding: 1.1rem 1rem !important;
   border-collapse: separate !important;
-  border-spacing: 0 !important;
+  /* Vertical gap so adjacent row highlights never touch — each stays a
+     separate rounded pill. */
+  border-spacing: 0 5px !important;
 }}
 .fancy table:hover {{ box-shadow: {shadow} !important; }}
 th {{
@@ -166,7 +168,7 @@ th {{
 th.count {{ padding-right: 16px !important; }}
 /* Airy rows — noticeably more breathing room between decks. */
 tr.deck td {{
-  padding: 15px 14px !important;
+  padding: 12px 14px !important;
   transition: background 0.14s ease;
 }}
 tr.deck td.decktd {{ padding-left: 18px !important; }}
