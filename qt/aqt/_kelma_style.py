@@ -1,15 +1,14 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
-"""KelmaDesktop theme — the warm-dark + gold look of the Kelma mobile app.
+"""KelmaDesktop theme — light/dark, both Kelma-branded.
 
-Two layers:
-  * webviews (deck list, reviewer, top toolbar, dialogs) — override Anki's base
-    CSS variables with `!important` so they win over the generated ones;
-  * native Qt chrome — append a small QSS via the `style_did_init` hook so it's
-    part of Anki's own stylesheet (not clobbered on re-apply).
+- Dark mode uses the exact KelmaMobile palette (warm near-black + gold).
+- Light mode uses a matching warm-cream + gold variant.
 
-Green stays the brand/logo; gold is the interactive accent; the semantic
-card-state colors (new/learning/review) are left alone. All best-effort.
+Follows the user's chosen theme (no forcing). Green stays the brand/logo; gold is
+the interactive accent; semantic card-state colors (new/learning/review) are left
+alone. Applied via `!important` webview vars + the native `style_did_init` hook,
+and re-rendered on theme switch. All best-effort.
 """
 
 from __future__ import annotations
@@ -17,44 +16,64 @@ from __future__ import annotations
 from aqt import gui_hooks, mw
 from aqt.theme import theme_manager
 
-# KelmaMobile palette, shifted to a warm charcoal (no green/olive cast — the
-# darks keep R >= G >= B so they read neutral-warm and pair with the gold).
-CANVAS = "#1a1815"
-CANVAS_INSET = "#131110"
-SURFACE = "#26231e"
-ELEVATED = "#322d24"
-BORDER = "#4a4438"
-BORDER_SUBTLE = "#37322a"
-FG = "#f4f1e7"
-FG_SUBTLE = "#b0ada3"
-FG_FAINT = "#7d7a70"
+# Exact KelmaMobile dark palette.
+DARK = {
+    "canvas": "#0f100a",
+    "inset": "#0b0c07",
+    "surface": "#1b1d16",
+    "elevated": "#24271d",
+    "border": "#3a3d31",
+    "border_subtle": "#2a2c22",
+    "fg": "#f4f1e7",
+    "fg_subtle": "#adaea1",
+    "fg_faint": "#7b7d70",
+}
+# Matching warm-cream light variant.
+LIGHT = {
+    "canvas": "#f4f1e7",
+    "inset": "#eae4d6",
+    "surface": "#fdfbf4",
+    "elevated": "#ffffff",
+    "border": "#ddd6c4",
+    "border_subtle": "#ece6d7",
+    "fg": "#26231d",
+    "fg_subtle": "#6b655a",
+    "fg_faint": "#99937f",
+}
 GOLD = "#c9ac6b"
 GOLD_SOFT = "#dcc48f"
 GOLD_BRIGHT = "#ecd49a"
 ON_GOLD = "#17150f"
 
-_CSS = f"""
+
+def _pal() -> dict:
+    return DARK if theme_manager.night_mode else LIGHT
+
+
+def _css() -> str:
+    p = _pal()
+    return f"""
 <style id="kelma-theme">
 :root {{
-  --canvas: {CANVAS} !important;
-  --canvas-inset: {CANVAS_INSET} !important;
-  --canvas-elevated: {SURFACE} !important;
-  --canvas-overlay: {ELEVATED} !important;
-  --canvas-code: {CANVAS_INSET} !important;
-  --canvas-glass: {ELEVATED} !important;
-  --fg: {FG} !important;
-  --fg-subtle: {FG_SUBTLE} !important;
-  --fg-faint: {FG_FAINT} !important;
-  --fg-disabled: {FG_FAINT} !important;
-  --fg-link: {FG} !important;
-  --border: {BORDER} !important;
-  --border-subtle: {BORDER_SUBTLE} !important;
-  --border-strong: {BORDER} !important;
+  --canvas: {p['canvas']} !important;
+  --canvas-inset: {p['inset']} !important;
+  --canvas-elevated: {p['surface']} !important;
+  --canvas-overlay: {p['elevated']} !important;
+  --canvas-code: {p['inset']} !important;
+  --canvas-glass: {p['elevated']} !important;
+  --fg: {p['fg']} !important;
+  --fg-subtle: {p['fg_subtle']} !important;
+  --fg-faint: {p['fg_faint']} !important;
+  --fg-disabled: {p['fg_faint']} !important;
+  --fg-link: {p['fg']} !important;
+  --border: {p['border']} !important;
+  --border-subtle: {p['border_subtle']} !important;
+  --border-strong: {p['border']} !important;
   --border-focus: {GOLD} !important;
   --button-primary-bg: {GOLD} !important;
   --button-primary-gradient-start: {GOLD_BRIGHT} !important;
   --button-primary-gradient-end: {GOLD} !important;
-  --button-primary-disabled: {BORDER} !important;
+  --button-primary-disabled: {p['border']} !important;
   --highlight-bg: {GOLD} !important;
   --highlight-fg: {ON_GOLD} !important;
 }}
@@ -62,11 +81,14 @@ a:hover {{ color: {GOLD} !important; }}
 </style>
 """
 
-_QSS = f"""
+
+def _qss() -> str:
+    p = _pal()
+    return f"""
 /* KelmaDesktop native accents */
-QMenuBar {{ background-color: {SURFACE}; }}
+QMenuBar {{ background-color: {p['surface']}; }}
 QMenuBar::item:selected {{ background-color: {GOLD}; color: {ON_GOLD}; }}
-QMenu {{ background-color: {SURFACE}; color: {FG}; border: 1px solid {BORDER}; }}
+QMenu {{ background-color: {p['surface']}; color: {p['fg']}; border: 1px solid {p['border']}; }}
 QMenu::item:selected {{ background-color: {GOLD}; color: {ON_GOLD}; }}
 QPushButton:default {{ background-color: {GOLD}; color: {ON_GOLD}; border: none; }}
 QPushButton:default:hover {{ background-color: {GOLD_BRIGHT}; }}
@@ -77,13 +99,12 @@ QProgressBar::chunk {{ background-color: {GOLD}; }}
 
 def _on_webview(web_content, context) -> None:
     try:
-        web_content.head += _CSS
+        web_content.head += _css()
         if type(context).__name__ in ("Toolbar", "TopToolbar"):
             web_content.head += (
                 "<style>"
                 f"body {{ border-bottom: 2px solid {GOLD} !important; }}"
-                # Nav items are warm-white; gold on hover / active only.
-                f".hitem {{ color: {FG} !important; }}"
+                f".hitem {{ color: {_pal()['fg']} !important; }}"
                 f".hitem:hover {{ color: {GOLD} !important; }}"
                 "</style>"
             )
@@ -92,20 +113,23 @@ def _on_webview(web_content, context) -> None:
 
 
 def _on_style(buf: str) -> str:
-    return buf + _QSS
+    return buf + _qss()
+
+
+def _on_theme_change() -> None:
+    # Re-render webviews so they pick up the new light/dark palette.
+    try:
+        mw.reset()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def setup() -> None:
-    # Pin a consistent dark base (KelmaMobile is dark-only), then re-apply.
-    try:
-        theme_manager._determine_night_mode = lambda: True  # type: ignore[method-assign]
-        theme_manager.set_night_mode(True)
-    except Exception:  # noqa: BLE001
-        pass
     gui_hooks.style_did_init.append(_on_style)
     gui_hooks.webview_will_set_content.append(_on_webview)
+    gui_hooks.theme_did_change.append(_on_theme_change)
     try:
-        theme_manager.apply_style()  # re-render with our hooks in place
+        theme_manager.apply_style()
         mw.reset()
     except Exception:  # noqa: BLE001
         pass
