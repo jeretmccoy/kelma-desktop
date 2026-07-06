@@ -11,6 +11,5 @@
   "block_native_sync": true,
   "backup_before_sync": true,
   "deck_routing": {},
-  "features": {},
-  "kelmasync_only": true
+  "features": {}
 }
