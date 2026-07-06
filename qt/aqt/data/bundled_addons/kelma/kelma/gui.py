@@ -174,7 +174,9 @@ class SettingsDialog(QDialog):
 
     def _refresh_status(self) -> None:
         cfg = config.get()
-        for service in consts.SERVICES:
+        # Only the services with a status widget — ui_services() drops AnkiWeb in
+        # KelmaSync-only mode, so iterating consts.SERVICES would KeyError there.
+        for service in config.ui_services():
             user = cfg["kelmasync_user"] if service == consts.KELMA else cfg["ankiweb_user"]
             if config.has_credentials(service):
                 self._status[service].setText(f"✓ Logged in as <b>{user or '?'}</b>")
