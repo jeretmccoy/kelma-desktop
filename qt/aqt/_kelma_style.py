@@ -17,20 +17,21 @@ from __future__ import annotations
 from aqt import gui_hooks, mw
 from aqt.theme import theme_manager
 
-# KelmaMobile palette.
-CANVAS = "#0f100a"
-CANVAS_INSET = "#0b0c07"
-SURFACE = "#1b1d16"
-ELEVATED = "#24271d"
-BORDER = "#3a3d31"
-BORDER_SUBTLE = "#2d3024"
+# KelmaMobile palette, shifted to a warm charcoal (no green/olive cast — the
+# darks keep R >= G >= B so they read neutral-warm and pair with the gold).
+CANVAS = "#100f0d"
+CANVAS_INSET = "#0a0908"
+SURFACE = "#1c1a17"
+ELEVATED = "#262219"
+BORDER = "#3d382e"
+BORDER_SUBTLE = "#2b2721"
 FG = "#f4f1e7"
-FG_SUBTLE = "#adaea1"
-FG_FAINT = "#7b7d70"
+FG_SUBTLE = "#b0ada3"
+FG_FAINT = "#7d7a70"
 GOLD = "#c9ac6b"
 GOLD_SOFT = "#dcc48f"
 GOLD_BRIGHT = "#ecd49a"
-ON_GOLD = "#17180f"
+ON_GOLD = "#17150f"
 
 _CSS = f"""
 <style id="kelma-theme">
