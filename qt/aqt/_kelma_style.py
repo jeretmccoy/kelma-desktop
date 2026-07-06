@@ -134,41 +134,60 @@ def _base_css() -> str:
 
 
 def _deckbrowser_css() -> str:
-    """Modern deck list: elevated rounded card, smooth gold-tinted row hovers."""
+    """Modern deck list: elevated rounded card, airy rows, refined counts."""
     p = _pal()
     accent, bright, _on, tint = _accent()
     shadow = (
-        "0 1px 2px rgba(0,0,0,0.35), 0 8px 24px rgba(0,0,0,0.28)"
+        "0 1px 2px rgba(0,0,0,0.35), 0 10px 30px rgba(0,0,0,0.30)"
         if theme_manager.night_mode
-        else "0 1px 2px rgba(60,50,20,0.05), 0 10px 30px rgba(120,100,40,0.10)"
+        else "0 1px 2px rgba(60,50,20,0.05), 0 12px 34px rgba(120,100,40,0.11)"
     )
     return f"""
 <style id="kelma-deckbrowser">
-body {{ font-family: {FONT_STACK}; }}
+body {{ font-family: {FONT_STACK}; margin: 2.4em 1em 1em 1em; }}
 .fancy table {{
   border: 1px solid {p['border_subtle']} !important;
-  border-radius: 18px !important;
+  border-radius: 20px !important;
   box-shadow: {shadow} !important;
   background: {p['surface']} !important;
-  padding: 0.75rem 0.5rem !important;
+  padding: 1.1rem 1rem !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
 }}
 .fancy table:hover {{ box-shadow: {shadow} !important; }}
 th {{
-  font-size: 0.72rem;
-  letter-spacing: 0.09em;
+  font-size: 0.7rem;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
   color: {p['fg_faint']} !important;
   font-weight: 700;
-  padding-bottom: 10px !important;
+  padding: 4px 14px 12px 14px !important;
 }}
+th.count {{ padding-right: 16px !important; }}
+/* Airy rows — noticeably more breathing room between decks. */
 tr.deck td {{
-  padding: 8px 14px !important;
+  padding: 15px 14px !important;
   transition: background 0.14s ease;
 }}
-a.deck {{ font-weight: 600; letter-spacing: 0.01em; }}
+tr.deck td.decktd {{ padding-left: 18px !important; }}
+tr.deck td[align=end] {{ padding-right: 18px !important; }}
+a.deck {{ font-weight: 600; font-size: 1.04em; letter-spacing: 0.01em; }}
 a.deck:hover {{ color: {accent} !important; text-decoration: none; }}
+/* Counts: tabular figures, aligned, a touch heavier. */
+.new-count, .learn-count, .review-count, .zero-count {{
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 1.02em;
+}}
+/* Rounded pill highlight on the current / hovered deck. */
 .current td, tr:hover:not(.top-level-drag-row) td {{
   background: {tint} !important;
+}}
+.current td:first-child, tr:hover:not(.top-level-drag-row) td:first-child {{
+  border-top-left-radius: 12px; border-bottom-left-radius: 12px;
+}}
+.current td:last-child, tr:hover:not(.top-level-drag-row) td:last-child {{
+  border-top-right-radius: 12px; border-bottom-right-radius: 12px;
 }}
 .gears {{ transition: opacity 0.14s ease, filter 0.14s ease; }}
 .gears:hover {{ filter: drop-shadow(0 0 4px {accent}); }}
@@ -177,15 +196,41 @@ a.deck:hover {{ color: {accent} !important; text-decoration: none; }}
 
 
 def _overview_css() -> str:
+    """Modern Overview: prominent, readable, gradient Study Now button."""
+    p = _pal()
     accent, bright, on_accent, _tint = _accent()
     grad = f"linear-gradient(135deg, {bright}, {accent})"
+    glow = (
+        f"0 8px 22px rgba(201, 172, 107, 0.30)"
+        if theme_manager.night_mode
+        else f"0 8px 22px rgba(201, 172, 107, 0.38)"
+    )
     return f"""
 <style id="kelma-overview">
 body {{ font-family: {FONT_STACK}; }}
-.descfont {{ line-height: 1.55; }}
-button.gradient, .overview button.primary {{
+.descfont {{ line-height: 1.6; }}
+h3 {{ letter-spacing: 0.01em; }}
+/* Study Now — dark text on gold (was low-contrast white), pill + lift. */
+#study, button#study.but {{
+  color: {on_accent} !important;
+  background: {grad} !important;
+  border: none !important;
   border-radius: 999px !important;
+  padding: 13px 44px !important;
+  margin-top: 0.4em;
+  font-size: 1.06rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.015em;
+  box-shadow: {glow} !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }}
+#study:hover, button#study.but:hover {{
+  color: {on_accent} !important;
+  background: {grad} !important;
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(201, 172, 107, 0.48) !important;
+}}
+#study:active, button#study.but:active {{ transform: translateY(0); }}
 </style>
 """
 
