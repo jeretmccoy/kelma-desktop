@@ -22,9 +22,9 @@ from aqt.qt import (
 )
 from aqt.utils import askUser, tooltip
 
-from . import branding, config, consts, deckbadges, storage
+from . import config, consts, deckbadges, storage
 
-_COLOR = {consts.KELMA: branding.ACCENT_GOLD, consts.ANKIWEB: "#2563eb"}
+_COLOR = {consts.KELMA: "#16a34a", consts.ANKIWEB: "#2563eb"}
 
 
 def _human(n: float) -> str:

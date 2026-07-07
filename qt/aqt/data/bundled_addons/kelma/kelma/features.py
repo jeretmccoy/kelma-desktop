@@ -37,13 +37,13 @@ FEATURES: list[Feature] = [
     Feature(
         key="brand_logo",
         label="Kelma star logo",
-        description="Show the Kelma logo in the sync menu, Tools menu, and settings.",
+        description="Show the Kelma green-star logo in the sync menu, Tools menu, and settings.",
         default=True,
     ),
     Feature(
         key="brand_theme",
         label="Kelma theme & name",
-        description="Use Kelma gold accents and the Kelma name across the add-on's UI.",
+        description="Use Kelma green accents and the Kelma name across the add-on's UI.",
         default=True,
     ),
 ]

@@ -24,17 +24,17 @@ import json
 from aqt import gui_hooks, mw
 from aqt.theme import theme_manager
 
-# Exact KelmaMobile dark palette (warm charcoal).
+# KelmaMobile-inspired dark palette: warm gold-charcoal, without the olive cast.
 DARK = {
-    "canvas": "#0f100a",
-    "inset": "#0b0c07",
-    "surface": "#1b1d16",
-    "elevated": "#24271d",
-    "border": "#3a3d31",
-    "border_subtle": "#2a2c22",
+    "canvas": "#11100c",
+    "inset": "#0c0b08",
+    "surface": "#1d1a12",
+    "elevated": "#292315",
+    "border": "#4a3e28",
+    "border_subtle": "#332c1d",
     "fg": "#f4f1e7",
-    "fg_subtle": "#adaea1",
-    "fg_faint": "#7b7d70",
+    "fg_subtle": "#b6aa92",
+    "fg_faint": "#857860",
 }
 # Matching warm-cream light variant.
 LIGHT = {
