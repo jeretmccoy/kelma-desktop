@@ -117,7 +117,7 @@ dependencies = [
  "hyper 1.7.0",
  "id_tree",
  "inflections",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "nom 8.0.0",
  "num_cpus",
  "num_enum",
@@ -183,7 +183,7 @@ dependencies = [
  "fluent-syntax",
  "inflections",
  "intl-memoizer",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "num-format",
  "phf 0.11.3",
  "regex",
@@ -206,7 +206,7 @@ dependencies = [
 name = "anki_process"
 version = "0.0.0"
 dependencies = [
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "snafu",
 ]
 
@@ -218,7 +218,7 @@ dependencies = [
  "anki_proto_gen",
  "anyhow",
  "inflections",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "prost",
  "prost-build",
  "prost-reflect",
@@ -236,7 +236,7 @@ dependencies = [
  "anyhow",
  "camino",
  "inflections",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "prost-reflect",
  "prost-types",
  "regex",
@@ -1201,7 +1201,7 @@ name = "configure"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "ninja_gen",
 ]
 
@@ -2307,7 +2307,7 @@ dependencies = [
  "camino",
  "clap",
  "fluent-syntax",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "regex",
  "serde_json",
  "snafu",
@@ -3506,6 +3506,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3726,7 +3735,7 @@ version = "0.0.0"
 dependencies = [
  "anki",
  "futures",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "linkcheck",
  "regex",
  "reqwest 0.12.23",
@@ -4191,7 +4200,7 @@ dependencies = [
  "embed-resource",
  "globset",
  "hex",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "maplit",
  "num_cpus",
  "regex",
@@ -4992,7 +5001,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "once_cell",
@@ -5012,7 +5021,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
