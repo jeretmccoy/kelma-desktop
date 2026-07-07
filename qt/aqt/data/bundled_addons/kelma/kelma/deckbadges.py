@@ -1,7 +1,7 @@
 """Per-deck sync badges + per-cloud size totals on the main deck list.
 
 Hooks `deck_browser_will_render_content` and rewrites the deck-tree HTML to:
-  - place a small coloured badge to the LEFT of each deck name — green = Kelma,
+  - place a small coloured badge to the LEFT of each deck name — gold = Kelma,
     blue = AnkiWeb, no letters — showing that deck's pending state (`✓` in sync,
     `+n` added / `~n` changed), with a hover tooltip naming the cloud + state;
   - show each cloud's total card count (its "size") above the deck list, coloured
@@ -18,7 +18,7 @@ import time
 from anki.media import media_paths_from_col_path
 from aqt import mw, gui_hooks
 
-from . import config, consts, features, paths, state
+from . import branding, config, consts, features, paths, state
 
 _installed = False
 
@@ -31,8 +31,8 @@ _size_running: set[str] = set()
 # Deck-list cloud filter: "all" | "kelma" | "ankiweb" | "both".
 _filter_mode = "all"
 
-# Kelma = green, AnkiWeb = blue.
-_COLOR = {consts.KELMA: "#16a34a", consts.ANKIWEB: "#2563eb"}
+# Kelma = gold, AnkiWeb = blue.
+_COLOR = {consts.KELMA: branding.ACCENT_GOLD, consts.ANKIWEB: "#2563eb"}
 
 # Matches a deck-name link in the deck-browser tree, capturing the deck id.
 _LINK_RE = re.compile(r"""(<a class="deck[^>]*pycmd\('open:(\d+)'\)">[^<]*</a>)""")

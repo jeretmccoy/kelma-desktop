@@ -1,8 +1,8 @@
 """Kelma visual branding — the star logo and accent color, gated on the
 `brand_logo` / `brand_theme` feature toggles so users can turn them off.
 
-- `brand_logo`  shows the green-star logo in the add-on's UI surfaces.
-- `brand_theme` swaps the neutral gold accent for Kelma green and applies the
+- `brand_logo`  shows the Kelma logo in the add-on's UI surfaces.
+- `brand_theme` uses the Kelma gold accent and applies the
   Kelma name/styling.
 """
 
@@ -17,9 +17,9 @@ from . import features
 _ASSETS = os.path.join(os.path.dirname(__file__), "assets")
 _STAR = os.path.join(_ASSETS, "kelma_star.png")
 
-# Kelma green (theme on) vs. the neutral gold used when the theme is off.
-ACCENT_GREEN = "#5cbf77"
-ACCENT_GOLD = "#d9b25a"
+# KelmaMobile's warm gold family, shared with the desktop shell theme.
+ACCENT_GOLD = "#dcc48f"
+ACCENT_GOLD_NEUTRAL = "#c9ac6b"
 
 
 def logo_enabled() -> bool:
@@ -32,7 +32,7 @@ def theme_enabled() -> bool:
 
 def accent() -> str:
     """Hex accent color for clickable/brand cues."""
-    return ACCENT_GREEN if theme_enabled() else ACCENT_GOLD
+    return ACCENT_GOLD if theme_enabled() else ACCENT_GOLD_NEUTRAL
 
 
 def accent_rgba(alpha: float) -> str:
