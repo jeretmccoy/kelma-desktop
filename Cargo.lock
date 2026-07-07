@@ -161,7 +161,7 @@ dependencies = [
  "unicode-normalization",
  "windows 0.61.3",
  "wiremock",
- "zip 4.6.0",
+ "zip 8.0.0",
  "zstd",
 ]
 
@@ -5628,7 +5628,7 @@ dependencies = [
  "tokio",
  "which",
  "xz2",
- "zip 4.6.0",
+ "zip 8.0.0",
  "zstd",
 ]
 
@@ -6532,6 +6532,7 @@ checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
  "itoa",
+ "js-sys",
  "num-conv",
  "powerfmt",
  "serde_core",
@@ -6897,6 +6898,12 @@ checksum = "cb30dbbd9036155e74adad6812e9898d03ec374946234fbcebd5dfc7b9187b90"
 dependencies = [
  "rustc-hash 2.1.1",
 ]
+
+[[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
 
 [[package]]
 name = "typenum"
@@ -8243,16 +8250,16 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "4.6.0"
+version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c034aa6c54f654df20e7dc3713bc51705c12f280748fb6d7f40f87c696623e34"
+checksum = "79b32dd4ad3aca14ae109f8cce0495ac1c57f6f4f00ad459a40e582f89440d97"
 dependencies = [
- "arbitrary",
  "crc32fast",
  "flate2",
  "indexmap",
  "memchr",
  "time",
+ "typed-path",
  "zopfli",
 ]
 
