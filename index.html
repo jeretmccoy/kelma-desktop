@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Download unsigned Kelma Desktop builds for macOS, Windows, and Linux."
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>Kelma Desktop Downloads</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link
+      rel="icon"
+      href="https://raw.githubusercontent.com/jeretmccoy/kelma-desktop/main/docs/_static/favicon.svg"
+      type="image/svg+xml"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Kelma Desktop downloads">
+        <img
+          src="https://raw.githubusercontent.com/jeretmccoy/kelma-desktop/main/docs/_static/logo.png"
+          alt=""
+          width="44"
+          height="44"
+        />
+        <span>Kelma Desktop</span>
+      </a>
+      <nav aria-label="Project links">
+        <a href="https://github.com/jeretmccoy/kelma-desktop">GitHub</a>
+        <a href="https://github.com/jeretmccoy/kelma-desktop/actions/workflows/release.yml"
+          >Builds</a
+        >
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Unsigned desktop builds</p>
+          <h1 id="page-title">Download Kelma Desktop</h1>
+          <p class="lede">
+            Installers below come from the latest successful build-only workflow run.
+            macOS and Windows may show security prompts because these builds are not
+            code-signed.
+          </p>
+        </div>
+        <div class="status-panel" aria-live="polite">
+          <span class="status-dot" id="status-dot"></span>
+          <div>
+            <p class="status-title" id="status-title">Checking latest build</p>
+            <p class="status-detail" id="status-detail">Loading installer artifacts...</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="downloads" aria-label="Downloads">
+        <div class="download-grid" id="download-grid">
+          <article class="download-card skeleton">
+            <div class="platform-icon"></div>
+            <div>
+              <h2>macOS</h2>
+              <p>Apple Silicon and Intel installers.</p>
+            </div>
+          </article>
+          <article class="download-card skeleton">
+            <div class="platform-icon"></div>
+            <div>
+              <h2>Windows</h2>
+              <p>x64 and ARM installers.</p>
+            </div>
+          </article>
+          <article class="download-card skeleton">
+            <div class="platform-icon"></div>
+            <div>
+              <h2>Linux</h2>
+              <p>x86_64 and ARM archives.</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="notes" aria-label="Install notes">
+        <h2>Before installing</h2>
+        <div class="note-list">
+          <p>
+            Downloads are packaged as GitHub artifact ZIP files. Open the ZIP, then
+            run the installer inside.
+          </p>
+          <p>
+            These builds are unsigned. Only install them if you trust this repository
+            and are comfortable with OS security prompts.
+          </p>
+          <p>
+            GitHub keeps workflow artifacts for a limited time. If links expire, use
+            the Builds link above to start or find a newer build.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <template id="download-card-template">
+      <article class="download-card">
+        <div class="platform-icon" aria-hidden="true"></div>
+        <div class="download-content">
+          <div class="download-heading">
+            <h2></h2>
+            <span class="recommended" hidden>Recommended</span>
+          </div>
+          <p class="download-description"></p>
+          <div class="download-actions"></div>
+        </div>
+      </article>
+    </template>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
