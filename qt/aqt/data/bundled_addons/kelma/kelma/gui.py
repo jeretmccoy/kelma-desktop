@@ -1556,7 +1556,7 @@ def _wrapped_sync() -> None:
         if _orig_sync:
             return _orig_sync()
         return
-    _sync_menu()
+    _v2_test_sync_notes()
 
 
 def _install_sync_hook() -> None:
@@ -1638,6 +1638,92 @@ def _v2_client_or_login():
     return client
 
 
+class V2NoteConflictDialog(QDialog):
+    """Simple v2 note conflict resolver.
+
+    The client has the last say: accept server, or force local to server.
+    """
+
+    def __init__(self, parent, client, conflicts: list[dict]) -> None:
+        super().__init__(parent)
+        self._client = client
+        self._conflicts = conflicts
+        self.setWindowTitle("KelmaSync v2 note conflicts")
+        self.resize(900, 420)
+
+        outer = QVBoxLayout(self)
+        outer.addWidget(QLabel("These notes changed on both this device and the server. Choose a resolution."))
+
+        self.table = QTableWidget(len(conflicts), 4)
+        self.table.setHorizontalHeaderLabels(["GUID", "Server", "Client", "Action"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        outer.addWidget(self.table)
+
+        for row, c in enumerate(conflicts):
+            guid = c.get("guid", "")
+            server = c.get("server") or {}
+            client_payload = c.get("client") or {}
+            self.table.setItem(row, 0, QTableWidgetItem(guid))
+            self.table.setItem(row, 1, QTableWidgetItem(_v2_preview(server)))
+            self.table.setItem(row, 2, QTableWidgetItem(_v2_preview(client_payload)))
+            btns = QWidget()
+            hb = QHBoxLayout(btns)
+            hb.setContentsMargins(0, 0, 0, 0)
+            accept = QPushButton("Accept server")
+            force = QPushButton("Force local")
+            accept.clicked.connect(lambda _=False, g=guid: self._accept_server(g))
+            force.clicked.connect(lambda _=False, g=guid: self._force_local(g))
+            hb.addWidget(accept)
+            hb.addWidget(force)
+            self.table.setCellWidget(row, 3, btns)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+
+    def _accept_server(self, guid: str) -> None:
+        try:
+            from kelma_sync_v2.note_sync import accept_server_note
+            accept_server_note(mw.col, self._client, guid)
+        except Exception as err:  # noqa: BLE001
+            tooltip(f"Accept server failed: {err}")
+            return
+        tooltip(f"Accepted server note {guid[:12]}")
+        self.accept()
+
+    def _force_local(self, guid: str) -> None:
+        try:
+            from kelma_sync_v2.note_sync import force_local_note
+            force_local_note(mw.col, self._client, guid)
+        except Exception as err:  # noqa: BLE001
+            tooltip(f"Force local failed: {err}")
+            return
+        tooltip(f"Forced local note {guid[:12]} to server")
+        self.accept()
+
+
+def _v2_forget_login() -> None:
+    cfg = config.get()
+    cfg["v2_token"] = ""
+    cfg["v2_client_id"] = ""
+    cfg["v2_last_server_time"] = ""
+    config.save(cfg)
+    tooltip("KelmaSync v2 login/checkpoint cleared.")
+
+
+def _v2_preview(record: dict) -> str:
+    fields = record.get("fields") or []
+    if isinstance(fields, list) and fields:
+        return " | ".join(str(x) for x in fields[:2])[:160]
+    if "client_modified_at" in record:
+        return str(record.get("client_modified_at"))
+    return str(record)[:160]
+
+
 def _v2_test_sync_notes() -> None:
     """Experimental note-only v2 sync entrypoint.
 
@@ -1665,6 +1751,7 @@ def _v2_test_sync_notes() -> None:
             result = future.result()
         except NoteSyncConflict as conflict:
             tooltip(f"KelmaSync v2: {len(conflict.conflicts)} note conflict(s). No checkpoint saved.")
+            V2NoteConflictDialog(mw, client, conflict.conflicts).exec()
             return
         except Exception as err:  # noqa: BLE001
             tooltip(f"KelmaSync v2 sync failed: {err}")
@@ -1684,50 +1771,26 @@ def _v2_test_sync_notes() -> None:
 # Menu
 # -----------------------------------------------------------------------------
 def _build_menu() -> None:
+    """Build the v2-only Kelma menu.
+
+    The old v1 dual-sync/inspect UI is intentionally hidden here so this plugin
+    surface is unambiguously testing the new v2 REST protocol.
+    """
     menu = QMenu("&Kelma", mw)
     if branding.logo_enabled():
         menu.setIcon(branding.star_icon())
     mw.form.menuTools.addMenu(menu)
 
-    aw = consts.ANKIWEB in config.ui_services()
-    if aw:
-        act_sync = QAction("Sync now (KelmaSync + AnkiWeb)", mw)
-        act_sync.triggered.connect(lambda: engine.dual_sync())
-        menu.addAction(act_sync)
+    act_sync = QAction("V2 sync notes", mw)
+    act_sync.triggered.connect(_v2_test_sync_notes)
+    menu.addAction(act_sync)
 
-    act_kelma = QAction("Sync now" if not aw else "Sync KelmaSync only", mw)
-    act_kelma.triggered.connect(lambda: engine.dual_sync(only=consts.KELMA))
-    menu.addAction(act_kelma)
-
-    if aw:
-        act_ankiweb = QAction("Sync AnkiWeb only", mw)
-        act_ankiweb.triggered.connect(lambda: engine.dual_sync(only=consts.ANKIWEB))
-        menu.addAction(act_ankiweb)
+    act_logout = QAction("V2 forget login", mw)
+    act_logout.triggered.connect(_v2_forget_login)
+    menu.addAction(act_logout)
 
     menu.addSeparator()
-
-    act_compare = QAction("Compare with server…", mw)
-    act_compare.triggered.connect(lambda: CompareDialog(mw).exec())
-    menu.addAction(act_compare)
-
-    act_storage = QAction("Storage breakdown…", mw)
-    act_storage.triggered.connect(_open_storage)
-    menu.addAction(act_storage)
-
-    act_diag = QAction("Sync diagnostics…", mw)
-    act_diag.triggered.connect(_open_diagnostics)
-    menu.addAction(act_diag)
-
-    menu.addSeparator()
-    act_v2 = QAction("V2 test sync notes…", mw)
-    act_v2.triggered.connect(_v2_test_sync_notes)
-    menu.addAction(act_v2)
-
     _build_display_menu(menu)
-
-    act_settings = QAction("Settings && deck routing…", mw)
-    act_settings.triggered.connect(lambda: SettingsDialog(mw).exec())
-    menu.addAction(act_settings)
 
 
 def _open_storage() -> None:
@@ -1771,5 +1834,5 @@ def setup() -> None:
     """Entry point, called once after the profile/collection is ready."""
     _build_menu()
     _install_sync_hook()
-    _install_native_sync_guard()
-    deckbadges.setup()
+    # v2 path is explicit and note-only right now; do not install the old v1
+    # native-sync guard or other dual-sync behavior.
