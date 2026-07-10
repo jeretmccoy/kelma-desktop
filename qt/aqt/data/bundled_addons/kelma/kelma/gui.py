@@ -700,6 +700,13 @@ class ServerSearchDialog(QDialog):
         self._populate()
 
     def _build_rows(self) -> list[dict]:
+        # Index local notes by guid so we can pair a server note with its local
+        # counterpart for the drill-in (avoids always-empty local side).
+        self._local_by_guid: dict[str, list[dict]] = {}
+        for note in self._local.get("notes", []) or []:
+            g = note.get("guid") or ""
+            self._local_by_guid.setdefault(g, []).append(note)
+
         rows = []
         for note in self._server.get("notes", []) or []:
             total = _total_card_count(note)
@@ -745,15 +752,35 @@ class ServerSearchDialog(QDialog):
     def _row_clicked(self, row: int, _col: int) -> None:
         if row >= len(getattr(self, "_visible_rows", [])):
             return
-        note = self._visible_rows[row]["note"]
-        guid = note.get("guid") or ""
+        server_note = self._visible_rows[row]["note"]
+        guid = server_note.get("guid") or ""
+        # Try to find the matching local note from the local manifest. Prefer
+        # an exact hash+mod match; fall back to the first note with the same
+        # guid. This avoids the local side always being empty.
+        local_note = None
+        local_manifest_note = None
+        candidates = self._local_by_guid.get(guid, [])
+        if candidates:
+            local_manifest_note = next(
+                (n for n in candidates
+                 if n.get("hash") == server_note.get("hash")
+                 and n.get("mod") == server_note.get("mod")),
+                candidates[0],
+            )
+            local_nid = int(local_manifest_note.get("nid", 0))
+            local_note = inspect.local_note_detail(mw.col, local_nid, guid)
         dlg = NoteDiffDialog(
             self,
             guid,
-            None,
+            local_note,
             self._hkey,
             self._endpoint,
-            diff={"guid": guid, "status": "server-only", "server": note, "local": None},
+            diff={
+                "guid": guid,
+                "status": "server-only" if not local_manifest_note else "in-sync",
+                "server": server_note,
+                "local": local_manifest_note,
+            },
             deck_diff={},
         )
         dlg.exec()
