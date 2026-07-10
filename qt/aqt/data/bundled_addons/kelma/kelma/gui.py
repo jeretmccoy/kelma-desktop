@@ -1763,52 +1763,49 @@ class V2FullDiffDialog(QDialog):
             self.status_label.setText("Not logged in.")
             return
         self._client = client
-        self.status_label.setText("Fetching server manifest…")
 
-        # Step 1: fetch server manifest in background (no collection lock needed)
-        def fetch_server():
-            return client.manifest()
+        # Anki's native progress dialog: a spinner that always animates (even
+        # while waiting on the collection lock) plus a per-phase label. This is
+        # the single source of "is it working" feedback.
+        mw.progress.start(label="KelmaSync: starting compare…", immediate=True)
 
-        def on_server(future: Future) -> None:
+        def set_progress(text: str) -> None:
+            mw.taskman.run_on_main(lambda: mw.progress.update(label=text))
+
+        def work():
+            # Everything runs in one worker thread so progress is linear and the
+            # UI never blocks. The collection is only read.
+            set_progress("Fetching server state…")
+            server = client.manifest()
+            set_progress(
+                f"Server: {len(server.get('notes', []))} notes, "
+                f"{len(server.get('cards', []))} cards · reading local collection…"
+            )
+
+            from kelma_sync_v2 import anki_local
+            local = anki_local.local_manifest(mw.col, progress=set_progress)
+
+            set_progress("Comparing…")
+            from kelma_sync_v2.full_diff import _diff_keyed
+            diff = type("FullDiff", (), {
+                "notes": _diff_keyed(local.get("notes", []), server.get("notes", []), "guid"),
+                "cards": _diff_keyed(local.get("cards", []), server.get("cards", []), "card_id"),
+                "notetypes": _diff_keyed(local.get("notetypes", []), server.get("notetypes", []), "notetype_id"),
+                "decks": _diff_keyed(local.get("decks", []), server.get("decks", []), "name"),
+                "server_time": server.get("server_time", ""),
+            })()
+            return diff
+
+        def done(future: Future) -> None:
+            mw.progress.finish()
             try:
-                server = future.result()
+                self._diff = future.result()
             except Exception as err:  # noqa: BLE001
                 self.status_label.setText(f"Compare failed: {err}")
                 return
-            counts = (
-                f"server: {len(server.get('notes', []))} notes, "
-                f"{len(server.get('cards', []))} cards"
-            )
-            self.status_label.setText(f"{counts} · building local manifest…")
+            self._populate()
 
-            # Step 2: build local manifest in background (collection access)
-            def fetch_local():
-                from kelma_sync_v2 import anki_local
-                return anki_local.local_manifest(mw.col)
-
-            def on_local(fut: Future) -> None:
-                try:
-                    local = fut.result()
-                except Exception as err:  # noqa: BLE001
-                    self.status_label.setText(f"Local manifest failed: {err}")
-                    return
-                self.status_label.setText("Computing diff…")
-                # Step 3: compute diff on main thread (fast, no I/O)
-                from kelma_sync_v2.full_diff import _diff_keyed
-                self._diff = type(
-                    "FullDiff", (), {
-                        "notes": _diff_keyed(local.get("notes", []), server.get("notes", []), "guid"),
-                        "cards": _diff_keyed(local.get("cards", []), server.get("cards", []), "card_id"),
-                        "notetypes": _diff_keyed(local.get("notetypes", []), server.get("notetypes", []), "notetype_id"),
-                        "decks": _diff_keyed(local.get("decks", []), server.get("decks", []), "name"),
-                        "server_time": server.get("server_time", ""),
-                    }
-                )()
-                self._populate()
-
-            mw.taskman.run_in_background(fetch_local, on_local, uses_collection=True)
-
-        mw.taskman.run_in_background(fetch_server, on_server, uses_collection=False)
+        mw.taskman.run_in_background(work, done, uses_collection=True)
 
     def _resource_key(self) -> str:
         return {0: "notes", 1: "notetypes", 2: "decks", 3: "cards"}.get(
