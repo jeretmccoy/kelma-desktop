@@ -1852,7 +1852,13 @@ def _v2_sync_menu() -> None:
     status = "logged in" if cfg.get("v2_token") else "not logged in"
     endpoint = cfg.get("v2_url") or "http://localhost:8081"
     user = cfg.get("v2_username") or "(no username saved)"
-    box.addWidget(QLabel(f"<b>{status}</b> · {user}<br><span style='color:#888'>{endpoint}</span>"))
+    status_label = QLabel(
+        f"<div style='padding-left:14px; padding-right:14px;'>"
+        f"<b>{status}</b> · {user}<br>"
+        f"<span style='color:#888'>{endpoint}</span>"
+        f"</div>"
+    )
+    box.addWidget(status_label)
     wa = QWidgetAction(menu)
     wa.setDefaultWidget(container)
     menu.addAction(wa)
