@@ -3,6 +3,11 @@ plus integration with the Sync button."""
 
 from __future__ import annotations
 
+import difflib
+from collections import Counter
+from concurrent.futures import Future
+from datetime import datetime
+
 from aqt import mw
 from aqt.qt import (
     QAbstractItemView,
@@ -23,6 +28,7 @@ from aqt.qt import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     Qt,
     QVBoxLayout,
     QWidget,
@@ -30,13 +36,735 @@ from aqt.qt import (
 )
 from aqt.utils import tooltip
 
-from . import auth, branding, capabilities, config, consts, deckbadges, engine, features, state
+from . import auth, branding, capabilities, config, consts, deckbadges, engine, features, inspect, state
 
 _orig_sync = None
 
 _CHECKABLE = Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
 # table column per service
 _COL = {consts.KELMA: 1, consts.ANKIWEB: 2}
+_DIFF_LABEL = {
+    "in-sync": "✓ in sync",
+    "local-newer": "↑ local newer",
+    "server-newer": "↓ server newer",
+    "server-only": "↓ server only",
+    "local-only": "↑ local only",
+    "server-extra": "↓ extra server duplicate",
+    "local-extra": "↑ extra local duplicate",
+    "conflict": "⚠ conflict",
+    "card-count": " cards differ",
+}
+_DIFF_PRIORITY = {
+    "conflict": 0,
+    "local-newer": 1,
+    "server-newer": 1,
+    "local-extra": 2,
+    "server-extra": 2,
+    "local-only": 2,
+    "server-only": 2,
+    "in-sync": 3,
+}
+
+
+def _esc(text: str) -> str:
+    """HTML-escape note field content for safe display in QTextBrowser."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", "<br>")
+    )
+
+
+def _strip_html(text: str) -> str:
+    """Strip HTML tags from an Anki note field, leaving plain text.
+
+    Anki fields are HTML (e.g. ``<div dir="rtl">مرحبا</div>``). Escaping that
+    buries the text under literal ``&lt;div&gt;`` — so we strip tags first and
+    diff/display the plain text. Whitespace is collapsed; ``<br>``/``<p>``
+    become newlines before stripping so line breaks survive.
+    """
+    import re
+    # Convert block-level tags to newlines before stripping.
+    text = re.sub(r"<(?:br|/p|/div)\s*>", "\n", text, flags=re.IGNORECASE)
+    # Remove all remaining tags.
+    text = re.sub(r"<[^>]+>", "", text)
+    # Decode common HTML entities.
+    text = (
+        text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+    )
+    # Collapse runs of spaces (but preserve newlines).
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    return "\n".join(lines).strip()
+
+
+def _card_count_in_deck(note: dict | None, deck_id: int) -> int:
+    """Number of cards `note` has in `deck_id`, from manifest data.
+
+    Mirrors ``inspect._card_count`` but lives in gui so the diff dialog can
+    show per-deck card counts without importing a private helper.
+    """
+    if not note:
+        return 0
+    decks = note.get("decks", []) or []
+    cpd = note.get("cards_per_deck", []) or []
+    total = 0
+    for i, did in enumerate(decks):
+        if did == deck_id and i < len(cpd):
+            total += int(cpd[i])
+    return total
+
+
+def _total_card_count(note: dict | None) -> int:
+    """Total cards for `note` across all decks (manifest data)."""
+    if not note:
+        return 0
+    return sum(int(c) for c in (note.get("cards_per_deck", []) or []))
+
+
+def _render_field_diff(local: str, server: str) -> tuple[str, str]:
+    """Render two field values as HTML with inline character-level diff.
+
+    HTML is stripped to plain text first (Anki fields are HTML), so the diff is
+    on actual content, not markup. Uses ``difflib.SequenceMatcher`` to highlight
+    exact spans that differ. Returns ``(local_html, server_html)``.
+    """
+    local = _strip_html(local)
+    server = _strip_html(server)
+    if local == server:
+        return _esc(local), _esc(server)
+
+    sm = difflib.SequenceMatcher(None, local, server)
+    local_parts: list[str] = []
+    server_parts: list[str] = []
+    for tag, l1, l2, s1, s2 in sm.get_opcodes():
+        l_chunk = local[l1:l2]
+        s_chunk = server[s1:s2]
+        if tag == "equal":
+            local_parts.append(_esc(l_chunk))
+            server_parts.append(_esc(s_chunk))
+        else:
+            # Differing spans: highlight with a bright inline mark so the
+            # exact change is visible even within a long field.
+            if l_chunk:
+                local_parts.append(
+                    f"<mark style='background:#8b3a3a; color:#fff; "
+                    f"border-radius:2px;'>{_esc(l_chunk)}</mark>"
+                )
+            if s_chunk:
+                server_parts.append(
+                    f"<mark style='background:#3a6b8b; color:#fff; "
+                    f"border-radius:2px;'>{_esc(s_chunk)}</mark>"
+                )
+    local_html = "".join(local_parts) or "<i style='color:#555'>(empty)</i>"
+    server_html = "".join(server_parts) or "<i style='color:#555'>(empty)</i>"
+    return local_html, server_html
+
+
+class NoteDiffDialog(QDialog):
+    """Shows the actual field-by-field diff for one conflicting note.
+
+    Fetches the server note's full fields (via ``/sync/inspect/note/:guid``)
+    and the local note's full fields, then displays each field side by side
+    using a QTextBrowser (HTML) so Arabic/RTL text renders correctly.
+    """
+
+    # Soft highlight for differing fields — not the blinding Qt yellow.
+    _DIFF_BG = "#3a2a1a"   # dark amber for dark mode
+    _SAME_BG = "transparent"
+    _LOCAL_FG = "#e8c46a"   # warm gold for local
+    _SERVER_FG = "#6ab4e8"  # cool blue for server
+
+    def __init__(
+        self,
+        parent,
+        guid: str,
+        local_note: dict,
+        hkey: str,
+        endpoint: str,
+        diff: dict | None = None,
+        deck_diff: dict | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Note diff — {guid[:12]}…")
+        self.resize(860, 600)
+        self._guid = guid
+        self._local_note = local_note
+        self._hkey = hkey
+        self._endpoint = endpoint
+        self._server_note = None
+        # Manifest-level entries (carry decks / cards_per_deck / hash) plus the
+        # deck IDs under inspection, so we can show card-count and tag/model
+        # differences even when the field text is byte-identical.
+        self._diff = diff or {}
+        self._deck_diff = deck_diff or {}
+        self._local_manifest = self._diff.get("local")
+        self._server_manifest = self._diff.get("server")
+        self._local_did = int((self._deck_diff.get("local") or {}).get("id", 0))
+        self._server_did = int((self._deck_diff.get("server") or {}).get("id", 0))
+        # Server nid from the manifest entry — unique per server note, so the
+        # fetch is unambiguous even when multiple notes share a guid.
+        self._server_nid = int((self._server_manifest or {}).get("nid", 0))
+
+        outer = QVBoxLayout(self)
+        self.status = QLabel("Fetching server note…")
+        self.status.setWordWrap(True)
+        outer.addWidget(self.status)
+
+        self.browser = QTextBrowser()
+        self.browser.setOpenExternalLinks(False)
+        self.browser.setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth)
+        outer.addWidget(self.browser)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+
+        if self._server_manifest:
+            # Fetch the server note in a background thread. This is a network
+            # request (not collection access), so uses_collection=False lets it
+            # run in parallel without taking the collection lock.
+            self._future = mw.taskman.run_in_background(
+                lambda: inspect.fetch_server_note(hkey, endpoint, self._server_nid, guid),
+                self._on_server_note,
+                uses_collection=False,
+            )
+        else:
+            # Local-only row: don't fall back to fetching by guid, because
+            # duplicate/empty GUIDs can return an unrelated server note.
+            self.status.setText("Rendering local-only note…")
+            self._populate()
+
+    def _on_server_note(self, future: Future) -> None:
+        try:
+            self._server_note = future.result()
+        except Exception as err:
+            self.status.setText(f"Failed to fetch server note: {err}")
+            return
+        try:
+            self._populate()
+        except Exception as err:
+            import traceback
+            self.status.setText(f"Error rendering diff: {err}")
+            self.browser.setHtml(
+                f"<pre style='color:#f44; white-space:pre-wrap; font-size:12px;'>"
+                f"{traceback.format_exc() or err}"
+                f"</pre>"
+            )
+
+    def _populate(self) -> None:
+        local = self._local_note or {}
+        server = self._server_note or {}
+        local_missing = not bool(local)
+        server_missing = not bool(self._server_note)
+
+        local_fields = (local.get("flds") or "").split("\x1f")
+        server_fields = (server.get("flds") or "").split("\x1f")
+        max_len = max(len(local_fields), len(server_fields))
+        local_fields += [""] * (max_len - len(local_fields))
+        server_fields += [""] * (max_len - len(server_fields))
+
+        # Empty GUIDs mean the server can't uniquely identify this note —
+        # the fetched server note may be a *different* note that also lacks a
+        # guid. Warn so the user doesn't trust the diff blindly.
+        guid_warning = ""
+        if not self._guid:
+            guid_warning = (
+                "<div style='padding:8px 10px; margin-bottom:8px; "
+                "background:#3a2a1a; border:1px solid #8b6a3a; border-radius:4px; "
+                "font-size:13px; color:#e8c46a;'>"
+                "⚠ This note has an empty GUID. The server may have multiple "
+                "notes without a GUID, so the server side shown below might be "
+                "a different note. Consider regenerating this note's GUID in Anki."
+                "</div>"
+            )
+
+        # --- Compute every concrete difference ---------------------------
+        n_field_diff = sum(1 for i in range(max_len) if local_fields[i] != server_fields[i])
+        local_tags = local.get("tags") or ""
+        server_tags = server.get("tags") or ""
+        tags_differ = local_tags != server_tags
+        local_mid = int(local.get("mid") or 0)
+        server_mid = int(server.get("mid") or 0)
+        mid_differ = local_mid != server_mid
+        local_mod = int(local.get("mod") or 0)
+        server_mod = int(server.get("mod") or 0)
+        mod_differ = local_mod != server_mod
+        local_cards = _card_count_in_deck(self._local_manifest, self._local_did)
+        server_cards = _card_count_in_deck(self._server_manifest, self._server_did)
+        cards_differ = local_cards != server_cards
+        local_total = _total_card_count(self._local_manifest)
+        server_total = _total_card_count(self._server_manifest)
+        total_differ = local_total != server_total
+
+        # --- "What differs" banner ---------------------------------------
+        status = self._diff.get("status", "")
+        changes: list[str] = []
+        if local_missing:
+            if status == "server-extra":
+                changes.append("extra duplicate exists on server")
+            else:
+                changes.append("note exists on server only")
+        if server_missing:
+            if status == "local-extra":
+                changes.append("extra duplicate exists locally")
+            else:
+                changes.append("note exists locally only")
+        if n_field_diff:
+            changes.append(f"{n_field_diff} field(s) differ")
+        if tags_differ:
+            changes.append(f"tags differ (local {len(local_tags.split())}, server {len(server_tags.split())})")
+        if cards_differ:
+            changes.append(f"cards in this deck differ (local {local_cards}, server {server_cards})")
+        if total_differ and not cards_differ:
+            changes.append(f"total cards differ (local {local_total}, server {server_total})")
+        if mid_differ:
+            changes.append(f"note type differs (local {local_mid}, server {server_mid})")
+        if mod_differ and not (n_field_diff or tags_differ):
+            # mod differs but no field/tag change explains it — call it out so
+            # the user isn't staring at two identical field rows.
+            changes.append("modified time differs")
+        if not changes:
+            changes.append("no differences detected — note is identical")
+        banner_color = "#e8c46a" if (len(changes) > 1 or changes[0] != "no differences detected — note is identical") else "#7ab37a"
+        banner = (
+            "<div style='padding:8px 10px; margin-bottom:8px; "
+            "background:#252525; border:1px solid #444; border-radius:4px; "
+            "font-size:13px; color:#ddd;'>"
+            f"<b style='color:{banner_color};'>What differs:</b> "
+            f"{', '.join(changes)}"
+            "</div>"
+        )
+
+        # --- Table rows --------------------------------------------------
+        def _row(label: str, lf: str, sf: str, force_diff: bool = False) -> str:
+            differs = force_diff or lf != sf
+            bg = self._DIFF_BG if differs else self._SAME_BG
+            local_html, server_html = _render_field_diff(lf, sf)
+            return (
+                f"<tr>"
+                f"<td style='padding:6px 10px; font-weight:bold; color:#888; "
+                f"vertical-align:top; white-space:nowrap;'>{label}</td>"
+                f"<td dir='auto' style='padding:6px 10px; background:{bg}; "
+                f"color:{self._LOCAL_FG}; vertical-align:top;'>{local_html}</td>"
+                f"<td dir='auto' style='padding:6px 10px; background:{bg}; "
+                f"color:{self._SERVER_FG}; vertical-align:top;'>{server_html}</td>"
+                f"</tr>"
+            )
+
+        rows_html: list[str] = []
+        # Field rows.
+        for i in range(max_len):
+            rows_html.append(_row(f"F{i + 1}", local_fields[i], server_fields[i]))
+        # Tags row — note hash covers flds only, so a tag-only change would
+        # otherwise be invisible.
+        rows_html.append(_row("Tags", local_tags, server_tags, force_diff=tags_differ))
+        # Cards row — always show per-deck + total counts; highlight when they
+        # differ. This is the only signal for the "card-count" status.
+        local_cards_txt = f"{local_cards} in deck · {local_total} total"
+        server_cards_txt = f"{server_cards} in deck · {server_total} total"
+        rows_html.append(_row("Cards", local_cards_txt, server_cards_txt, force_diff=(cards_differ or total_differ)))
+        # Note type row.
+        rows_html.append(_row("Model", str(local_mid), str(server_mid), force_diff=mid_differ))
+        # Modified row.
+        rows_html.append(_row("Modified", _format_note_mod(local), _format_note_mod(server), force_diff=mod_differ))
+
+        legend = (
+            "<div style='padding:6px 10px; margin-bottom:8px; "
+            "background:#1f1f1f; border:1px solid #333; border-radius:4px; "
+            "font-size:12px; color:#888;'>"
+            f"<span style='color:{self._LOCAL_FG};'>● Local</span> &nbsp;"
+            f"<span style='color:{self._SERVER_FG};'>● Server</span> &nbsp;·&nbsp; "
+            f"<span style='background:{self._DIFF_BG}; padding:2px 6px; "
+            f"border-radius:2px; color:#ddd;'>row differs</span> &nbsp;"
+            "<span style='background:#8b3a3a; color:#fff; padding:2px 6px; "
+            "border-radius:2px;'>red</span> = removed locally &nbsp;"
+            "<span style='background:#3a6b8b; color:#fff; padding:2px 6px; "
+            "border-radius:2px;'>blue</span> = added on server"
+            "</div>"
+        )
+
+        # --- Cards breakdown ------------------------------------------------
+        # One row per card-template ord present on either side. A note has at
+        # most one card per ord, so ord keys the comparison. Missing on one
+        # side = that template's card was deleted / not yet generated there.
+        local_card_list = local.get("cards") or []
+        server_card_list = server.get("cards") or []
+        local_by_ord = {int(c["ord"]): int(c.get("did", 0)) for c in local_card_list}
+        server_by_ord = {int(c["ord"]): int(c.get("did", 0)) for c in server_card_list}
+        # Resolve deck ids to names where we can: the inspected deck is in
+        # deck_diff; its local/server entries carry id + name.
+        deck_names: dict[int, str] = {}
+        for side in ("local", "server"):
+            dk = self._deck_diff.get(side) or {}
+            if dk.get("id") is not None and dk.get("name"):
+                deck_names[int(dk["id"])] = dk["name"]
+
+        def _deck_label(did: int) -> str:
+            name = deck_names.get(did)
+            return f"{name} ({did})" if name else f"deck {did}"
+
+        card_rows: list[str] = []
+        for ord_ in sorted(set(local_by_ord) | set(server_by_ord)):
+            l_did = local_by_ord.get(ord_)
+            s_did = server_by_ord.get(ord_)
+            l_txt = _deck_label(l_did) if l_did is not None else "—"
+            s_txt = _deck_label(s_did) if s_did is not None else "—"
+            missing_local = l_did is None
+            missing_server = s_did is None
+            bg = self._DIFF_BG if (missing_local or missing_server or l_did != s_did) else self._SAME_BG
+            l_html = (
+                f"<i style='color:#8b3a3a;'>(missing)</i>" if missing_local
+                else f"<span style='color:{self._LOCAL_FG};'>{_esc(l_txt)}</span>"
+            )
+            s_html = (
+                f"<i style='color:#3a6b8b;'>(missing)</i>" if missing_server
+                else f"<span style='color:{self._SERVER_FG};'>{_esc(s_txt)}</span>"
+            )
+            card_rows.append(
+                f"<tr>"
+                f"<td style='padding:6px 10px; font-weight:bold; color:#888; "
+                f"vertical-align:top; white-space:nowrap;'>Card {ord_ + 1}</td>"
+                f"<td dir='auto' style='padding:6px 10px; background:{bg}; "
+                f"vertical-align:top;'>{l_html}</td>"
+                f"<td dir='auto' style='padding:6px 10px; background:{bg}; "
+                f"vertical-align:top;'>{s_html}</td>"
+                f"</tr>"
+            )
+        l_fg = self._LOCAL_FG
+        s_fg = self._SERVER_FG
+        cards_table_html = (
+            "<div style='margin-top:14px;'><div style='padding:4px 10px; "
+            "font-size:12px; color:#888;'>Cards (one row per card template)</div>"
+            "<table style='border-collapse:collapse; width:100%;'>"
+            "<tr>"
+            "<th style='padding:6px 10px; text-align:left; color:#888; "
+            "border-bottom:1px solid #333;'>Template</th>"
+            f"<th style='padding:6px 10px; text-align:left; color:{l_fg}; "
+            "border-bottom:1px solid #333;'>Local</th>"
+            f"<th style='padding:6px 10px; text-align:left; color:{s_fg}; "
+            "border-bottom:1px solid #333;'>Server</th>"
+            "</tr>"
+            f"{''.join(card_rows)}"
+            "</table></div>"
+        )
+
+        rows_joined = "".join(rows_html)
+        html = (
+            "<html><body style='font-family: -apple-system, sans-serif; "
+            "font-size: 14px; background:#1e1e1e; color:#ddd;'>"
+            f"{guid_warning}"
+            f"{banner}"
+            f"{legend}"
+            "<table style='border-collapse:collapse; width:100%;'>"
+            "<tr>"
+            "<th style='padding:6px 10px; text-align:left; color:#888; "
+            "border-bottom:1px solid #333;'>Field</th>"
+            f"<th style='padding:6px 10px; text-align:left; color:{l_fg}; "
+            "border-bottom:1px solid #333;'>Local</th>"
+            f"<th style='padding:6px 10px; text-align:left; color:{s_fg}; "
+            "border-bottom:1px solid #333;'>Server</th>"
+            "</tr>"
+            f"{rows_joined}"
+            "</table>"
+            f"{cards_table_html}"
+            "</body></html>"
+        )
+        self.browser.setHtml(html)
+
+        self.status.setText(
+            f"GUID: {self._guid}  ·  status: {self._diff.get('status', '—')}"
+        )
+
+
+class ConflictDialog(QDialog):
+    """Drills into one deck conflict and explains it note-by-note."""
+
+    def __init__(self, parent, deck_diff: dict, local: dict, server: dict, hkey: str, endpoint: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Kelma — Conflict: {deck_diff['name']}")
+        self.resize(850, 580)
+        outer = QVBoxLayout(self)
+        title = QLabel(deck_diff["name"])
+        title.setTextFormat(Qt.TextFormat.PlainText)
+        title.setStyleSheet("font-weight: bold;")
+        outer.addWidget(title)
+        hint = QLabel(
+            "These are the notes that make the local and server deck hashes differ. "
+            "Modified times determine which side newest-wins would take."
+        )
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+        self._note_diffs = inspect.diff_deck_notes(local, server, deck_diff)
+        self._deck_diff = deck_diff
+        self._local = local
+        self._server = server
+        self._hkey = hkey
+        self._endpoint = endpoint
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(
+            ["Note preview", "Difference", "Local modified", "Server modified"]
+        )
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in (1, 2, 3):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.cellDoubleClicked.connect(self._note_clicked)
+        outer.addWidget(self.table)
+
+        controls = QHBoxLayout()
+        self.show_matching = QCheckBox("Show matching notes")
+        self.show_matching.toggled.connect(self._populate)
+        controls.addWidget(self.show_matching)
+        controls.addStretch()
+        outer.addLayout(controls)
+
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        outer.addWidget(self.summary)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+        self._populate()
+
+    def _populate(self, _checked: bool = False) -> None:
+        rows = [
+            diff for diff in self._note_diffs
+            if self.show_matching.isChecked() or diff["status"] != "in-sync"
+        ]
+        self.table.setRowCount(len(rows))
+        for row, diff in enumerate(rows):
+            preview = QTableWidgetItem(diff["preview"])
+            preview.setToolTip(f"Note GUID: {diff['guid']}")
+            self.table.setItem(row, 0, preview)
+            status = QTableWidgetItem(_DIFF_LABEL[diff["status"]])
+            local_hash = (diff.get("local") or {}).get("hash", "—")
+            server_hash = (diff.get("server") or {}).get("hash", "—")
+            status.setToolTip(f"Local: {local_hash}\nServer: {server_hash}")
+            self.table.setItem(row, 1, status)
+            self.table.setItem(row, 2, QTableWidgetItem(_format_note_mod(diff.get("local"))))
+            self.table.setItem(row, 3, QTableWidgetItem(_format_note_mod(diff.get("server"))))
+
+        counts = Counter(diff["status"] for diff in self._note_diffs)
+        changed = len(self._note_diffs) - counts["in-sync"]
+        parts = [
+            f"{counts[label]} {label.replace('-', ' ')}"
+            for label in (
+                "conflict", "card-count", "local-newer", "server-newer",
+                "local-extra", "server-extra", "local-only", "server-only",
+            )
+            if counts[label]
+        ]
+        detail = ", ".join(parts) if parts else "no note-level differences"
+        self.summary.setText(
+            f"{changed} differing note(s): {detail}. "
+            f"Showing {len(rows)} of {len(self._note_diffs)} notes. "
+            "Double-click a row to see the field-by-field diff."
+        )
+
+    def _note_clicked(self, row: int, _col: int) -> None:
+        """Open a field-by-field diff dialog for the double-clicked note."""
+        rows = [
+            diff for diff in self._note_diffs
+            if self.show_matching.isChecked() or diff["status"] != "in-sync"
+        ]
+        if row >= len(rows):
+            return
+        diff = rows[row]
+        guid = diff["guid"]
+        # Local nid from the manifest entry — unique per local note. For
+        # server-only rows, do not fall back to guid: duplicate/empty GUIDs can
+        # fetch an unrelated local note and hide the one-sided difference.
+        local_manifest_note = diff.get("local")
+        if local_manifest_note:
+            local_nid = int(local_manifest_note.get("nid", 0))
+            # Fetch the local note's full fields on the main thread (Qt-safe).
+            local_note = inspect.local_note_detail(mw.col, local_nid, guid)
+        else:
+            local_note = None
+        dlg = NoteDiffDialog(
+            self, guid, local_note, self._hkey, self._endpoint,
+            diff=diff, deck_diff=self._deck_diff,
+        )
+        dlg.exec()
+
+
+def _format_note_mod(note) -> str:
+    if not note or not note.get("mod"):
+        return "—"
+    try:
+        return datetime.fromtimestamp(note["mod"]).strftime("%Y-%m-%d %H:%M")
+    except (OSError, OverflowError, TypeError, ValueError):
+        return str(note["mod"])
+
+
+class CompareDialog(QDialog):
+    """Shows the server's state vs the local master, deck-by-deck, so the user
+    can see what will change before committing to a sync. See
+    ``docs/REDESIGN.md``."""
+
+    def __init__(self, parent) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Kelma — Compare with server")
+        if branding.logo_enabled():
+            self.setWindowIcon(branding.star_icon())
+        self.resize(560, 520)
+        outer = QVBoxLayout(self)
+        outer.addWidget(_brand_header("Compare"))
+        outer.addWidget(QLabel(
+            "This shows what differs between this collection and the KelmaSync "
+            "server, before you sync. Syncing applies newest-wins per note."
+        ))
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Deck", "Status", "Cards (L/S)"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.cellClicked.connect(self._row_clicked)
+        outer.addWidget(self.table)
+
+        filters = QHBoxLayout()
+        self.show_matching = QCheckBox("Show decks already in sync")
+        self.show_matching.toggled.connect(self._populate)
+        self.show_matching.setEnabled(False)
+        filters.addWidget(self.show_matching)
+        filters.addStretch()
+        filters.addWidget(QLabel("One-sided decks:"))
+        self.one_sided = QComboBox()
+        self.one_sided.addItem("Hide one-sided", "none")
+        self.one_sided.addItem("Show local + server only", "both")
+        self.one_sided.addItem("Show local only", "local")
+        self.one_sided.addItem("Show server only", "server")
+        self.one_sided.currentIndexChanged.connect(self._populate)
+        filters.addWidget(self.one_sided)
+        outer.addLayout(filters)
+
+        self.status_label = QLabel("Loading…")
+        self.status_label.setWordWrap(True)
+        outer.addWidget(self.status_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        self.sync_btn = buttons.addButton(
+            "Sync now", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        self.sync_btn.setEnabled(False)
+        buttons.accepted.connect(self._on_sync)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+
+        # Defer the fetch so the dialog paints first.
+        from aqt.qt import QTimer
+        QTimer.singleShot(0, self._load)
+
+    def _load(self) -> None:
+        self.status_label.setText("Fetching server state…")
+        # addonManager/Qt access must stay on the main thread. Capture plain
+        # strings here, then do only the blocking HTTP request in the worker.
+        cfg = config.get()
+        hkey = cfg["kelmasync_hkey"]
+        endpoint = cfg["kelmasync_url"] or consts.DEFAULT_KELMA_URL
+        if not hkey:
+            self.status_label.setText(
+                "Not logged in to KelmaSync. Open Settings & deck routing first."
+            )
+            return
+        self._hkey = hkey
+        self._endpoint = endpoint
+        mw.taskman.run_in_background(
+            lambda: inspect.fetch_server_manifest(hkey, endpoint),
+            self._server_loaded,
+        )
+
+    def _server_loaded(self, future: "Future[object]") -> None:
+        try:
+            server = future.result()
+        except Exception as err:
+            self.status_label.setText(
+                f"Could not fetch server state: {err}"
+            )
+            return
+        self.status_label.setText("Reading local collection…")
+        local = inspect.build_local_manifest(mw.col, consts.KELMA)
+        self._local_manifest = local
+        self._server_manifest = server
+        self._diffs = inspect.diff_manifests(local, server)
+        n_changed = sum(1 for d in self._diffs if d["status"] != "in-sync")
+        n_matching = len(self._diffs) - n_changed
+        self.show_matching.setEnabled(n_matching > 0)
+        self.sync_btn.setEnabled(n_changed > 0)
+        self._populate()
+
+    def _populate(self, _checked: bool = False) -> None:
+        one_sided = self.one_sided.currentData()
+        diffs = []
+        for diff in getattr(self, "_diffs", []):
+            status = diff["status"]
+            if status == "in-sync" and not self.show_matching.isChecked():
+                continue
+            if status == "local-only" and one_sided not in ("local", "both"):
+                continue
+            if status == "server-only" and one_sided not in ("server", "both"):
+                continue
+            diffs.append(diff)
+        diffs.sort(key=lambda d: (_DIFF_PRIORITY[d["status"]], d["name"].lower()))
+        self._visible_diffs = diffs
+        self.table.setRowCount(len(diffs))
+        for row, d in enumerate(diffs):
+            name = QTableWidgetItem(d["name"])
+            name.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(row, 0, name)
+            status = QTableWidgetItem(_DIFF_LABEL.get(d["status"], d["status"]))
+            status.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 1, status)
+            l = d.get("local")
+            s = d.get("server")
+            lc = str(l["cards"]) if l else "0"
+            sc = str(s["cards"]) if s else "0"
+            counts = QTableWidgetItem(f"{lc} / {sc}")
+            counts.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 2, counts)
+        if hasattr(self, "_diffs"):
+            n_changed = sum(1 for d in self._diffs if d["status"] != "in-sync")
+            n_matching = len(self._diffs) - n_changed
+            n_conflicts = sum(1 for d in self._diffs if d["status"] == "conflict")
+            self.status_label.setText(
+                f"Showing {len(diffs)} of {len(self._diffs)} decks: "
+                f"{n_conflicts} conflict(s), {n_changed} differ, "
+                f"{n_matching} in sync. Click a conflict row for note details."
+            )
+
+    def _row_clicked(self, row: int, _column: int) -> None:
+        if row >= len(getattr(self, "_visible_diffs", [])):
+            return
+        deck_diff = self._visible_diffs[row]
+        if deck_diff["status"] != "conflict":
+            return
+        ConflictDialog(
+            self,
+            deck_diff,
+            self._local_manifest,
+            self._server_manifest,
+            self._hkey,
+            self._endpoint,
+        ).exec()
+
+    def _on_sync(self) -> None:
+        self.accept()
+        engine.dual_sync(only=consts.KELMA)
 
 
 class SettingsDialog(QDialog):
@@ -437,6 +1165,7 @@ def _sync_menu() -> None:
     else:
         a_k = menu.addAction("Sync now")
     menu.addSeparator()
+    a_compare = menu.addAction("Compare with server…")
     a_set = menu.addAction("Settings && deck routing…")
 
     # Dispatch AFTER the menu's modal loop closes — starting a progress dialog
@@ -456,6 +1185,8 @@ def _sync_menu() -> None:
         engine.dual_sync(only=consts.KELMA)
     elif a_w is not None and chosen is a_w:
         engine.dual_sync(only=consts.ANKIWEB)
+    elif chosen is a_compare:
+        CompareDialog(mw).exec()
     elif chosen is a_set:
         SettingsDialog(mw).exec()
 
@@ -530,6 +1261,10 @@ def _build_menu() -> None:
         menu.addAction(act_ankiweb)
 
     menu.addSeparator()
+
+    act_compare = QAction("Compare with server…", mw)
+    act_compare.triggered.connect(lambda: CompareDialog(mw).exec())
+    menu.addAction(act_compare)
 
     act_storage = QAction("Storage breakdown…", mw)
     act_storage.triggered.connect(_open_storage)
