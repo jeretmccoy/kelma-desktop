@@ -51,6 +51,8 @@ _DIFF_LABEL = {
     "local-only": "↑ local only",
     "server-extra": "↓ extra server duplicate",
     "local-extra": "↑ extra local duplicate",
+    "deck-count": "⚠ deck count mismatch",
+    "deck-hash": "⚠ deck hash mismatch",
     "conflict": "⚠ conflict",
     "card-count": " cards differ",
 }
@@ -58,6 +60,8 @@ _DIFF_PRIORITY = {
     "conflict": 0,
     "local-newer": 1,
     "server-newer": 1,
+    "deck-count": 0,
+    "deck-hash": 0,
     "local-extra": 2,
     "server-extra": 2,
     "local-only": 2,
@@ -559,8 +563,9 @@ class ConflictDialog(QDialog):
         parts = [
             f"{counts[label]} {label.replace('-', ' ')}"
             for label in (
-                "conflict", "card-count", "local-newer", "server-newer",
-                "local-extra", "server-extra", "local-only", "server-only",
+                "conflict", "card-count", "deck-count", "deck-hash",
+                "local-newer", "server-newer", "local-extra", "server-extra",
+                "local-only", "server-only",
             )
             if counts[label]
         ]
@@ -580,6 +585,9 @@ class ConflictDialog(QDialog):
         if row >= len(rows):
             return
         diff = rows[row]
+        if diff["status"] in ("deck-count", "deck-hash"):
+            tooltip(diff["preview"])
+            return
         guid = diff["guid"]
         # Local nid from the manifest entry — unique per local note. For
         # server-only rows, do not fall back to guid: duplicate/empty GUIDs can

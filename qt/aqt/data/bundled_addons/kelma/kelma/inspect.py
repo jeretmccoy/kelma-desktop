@@ -347,6 +347,8 @@ def diff_deck_notes(local: dict, server: dict, deck_diff: dict) -> list[dict]:
         "card-count": 0,
         "local-newer": 1,
         "server-newer": 1,
+        "deck-count": 0,
+        "deck-hash": 0,
         "local-extra": 2,
         "server-extra": 2,
         "local-only": 2,
@@ -441,6 +443,35 @@ def diff_deck_notes(local: dict, server: dict, deck_diff: dict) -> list[dict]:
                 None,
                 server_note,
                 "server-extra" if had_local else "server-only",
+            )
+    if out and all(diff["status"] == "in-sync" for diff in out):
+        local_cards = int(local_deck.get("cards", 0))
+        server_cards = int(server_deck.get("cards", 0))
+        local_notes_count = int(local_deck.get("notes", 0))
+        server_notes_count = int(server_deck.get("notes", 0))
+        if local_cards != server_cards or local_notes_count != server_notes_count:
+            out.append(
+                {
+                    "guid": "",
+                    "preview": (
+                        "Deck summary mismatch: "
+                        f"cards local {local_cards}, server {server_cards}; "
+                        f"notes local {local_notes_count}, server {server_notes_count}"
+                    ),
+                    "status": "deck-count",
+                    "local": None,
+                    "server": None,
+                }
+            )
+        elif local_deck.get("hash") != server_deck.get("hash"):
+            out.append(
+                {
+                    "guid": "",
+                    "preview": "Deck hash differs, but individual note details matched. This can happen with duplicate/empty GUID ordering.",
+                    "status": "deck-hash",
+                    "local": None,
+                    "server": None,
+                }
             )
     out.sort(key=lambda d: (priority[d["status"]], d["preview"].lower(), d["guid"]))
     return out
