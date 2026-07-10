@@ -537,8 +537,12 @@ def preview_accept_server(local_note: dict | None, server_note: dict) -> dict:
         },
     }
 
-def accept_server_note(col: Collection, nid: int, server_note: dict) -> dict:
-    """Update the local note to match the server's fields, tags, and mod.
+def accept_server_note(col: Collection, nid: int, server_note: dict, deck_id: int = 0) -> dict:
+    """Update the local note to match the server's fields, tags, and cards.
+
+    If ``nid`` is 0 (note doesn't exist locally), creates a new note from the
+    server's data — this is the whole point of "accept server": pull just
+    this note without a blind full sync.
 
     Card templates (ord) that exist on the server but not locally are created
     via Anki's note-update (which generates cards from the note type's
@@ -546,16 +550,36 @@ def accept_server_note(col: Collection, nid: int, server_note: dict) -> dict:
     server's mod so the next sync doesn't push the local copy back.
     """
     import time
-    note = col.get_note(nid)
+    from anki.utils import guid64
+
+    if nid:
+        # Update existing local note.
+        note = col.get_note(nid)
+        note.fields = (server_note.get("flds") or "").split("\x1f")
+        note.tags = (server_note.get("tags") or "").split()
+        note.mod = int(server_note.get("mod", 0)) or int(time.time())
+        note.flush()
+        col.update_note(note)
+        return preview_accept_server(local_note_detail(col, nid), server_note)
+
+    # No local note — create one from the server's data.
+    mid = int(server_note.get("mid", 0))
+    notetype = col.models.get(mid)
+    if not notetype:
+        raise ValueError(f"note type {mid} not found locally — cannot create note")
+    note = col.new_note(notetype)
     note.fields = (server_note.get("flds") or "").split("\x1f")
     note.tags = (server_note.get("tags") or "").split()
-    # Set mod to server's mod so sync sees them as equal, not local-newer.
+    # Use the server's guid so the note matches across syncs. Generate one if
+    # the server's guid is empty (the root cause of the whole duplicate mess).
+    server_guid = server_note.get("guid") or ""
+    note.guid = server_guid if server_guid else guid64()
+    target_deck = deck_id or col.decks.get_current_id()
+    col.add_note(note, target_deck)
+    # Set mod to server's mod so sync sees them as equal.
     note.mod = int(server_note.get("mod", 0)) or int(time.time())
     note.flush()
-    # Regenerate cards from the note type's templates — adds missing ords,
-    # removes extra ones.
-    col.update_note(note)
-    return preview_accept_server(local_note_detail(col, nid), server_note)
+    return preview_accept_server(local_note_detail(col, note.id), server_note)
 
 
 def preview_push_local(local_note: dict, server_note: dict | None) -> dict:

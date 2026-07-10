@@ -246,7 +246,7 @@ class NoteDiffDialog(QDialog):
         self.accept_btn.clicked.connect(self._accept_server)
 
         self.push_btn = buttons.addButton(
-            "Push to server", QDialogButtonBox.ButtonRole.ActionRole
+            "Force local → server", QDialogButtonBox.ButtonRole.ActionRole
         )
         self.push_btn.setEnabled(False)
         self.push_btn.clicked.connect(self._push_to_server)
@@ -538,22 +538,29 @@ class NoteDiffDialog(QDialog):
             tooltip("No server note to accept.")
             return
         nid = int(local.get("nid", 0))
-        if not nid:
-            # Note doesn't exist locally — can't accept into nothing.
-            tooltip("This note doesn't exist locally. Sync to download it from the server.")
-            return
         preview = inspect.preview_accept_server(local if local else None, server)
         if not self._confirm_action("Accept server", preview, "local"):
             return
-        inspect.accept_server_note(mw.col, nid, server)
-        self._local_note = inspect.local_note_detail(mw.col, nid, local.get("guid", ""))
+        inspect.accept_server_note(mw.col, nid, server, deck_id=self._local_did)
+        new_nid = nid or self._find_created_note(server)
+        if new_nid:
+            self._local_note = inspect.local_note_detail(mw.col, new_nid, server.get("guid", ""))
         tooltip("Local note updated to match server. Sync to propagate.")
         self._populate()
 
+    def _find_created_note(self, server_note: dict) -> int:
+        """Find a note just created by accept_server (by guid)."""
+        guid = server_note.get("guid") or ""
+        if not guid:
+            return 0
+        row = mw.col.db.first("SELECT id FROM notes WHERE guid = ?", guid)
+        return int(row[0]) if row else 0
+
     def _push_to_server(self) -> None:
-        """Bump the local note's mod so the next sync pushes it to the server."""
+        """Bump the local note's mod so it's newer, then sync to push it to server."""
         local = self._local_note or {}
         if not local:
+            tooltip("No local note to push.")
             return
         nid = int(local.get("nid", 0))
         if not nid:
@@ -563,10 +570,12 @@ class NoteDiffDialog(QDialog):
             tooltip("Cannot push a note with an empty GUID — generate one first.")
             return
         preview = inspect.preview_push_local(local, self._server_note)
-        if not self._confirm_action("Push to server", preview, "server"):
+        if not self._confirm_action("Force local → server", preview, "server"):
             return
         inspect.push_local_note(mw.col, nid)
-        tooltip("Note marked newer. Sync to push to server.")
+        tooltip("Note marked newer. Syncing to push to server…")
+        self.accept()
+        engine.dual_sync(only=consts.KELMA)
 
     def _confirm_action(self, action: str, preview: dict, target: str) -> bool:
         """Show a confirmation dialog with what will change. Returns True if confirmed."""
