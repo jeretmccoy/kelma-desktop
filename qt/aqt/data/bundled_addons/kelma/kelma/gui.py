@@ -1821,91 +1821,107 @@ class V2FullDiffDialog(QDialog):
         key = self._resource_key()
         return getattr(self._diff, key, [])
 
+    def _changed_entries(self) -> list:
+        return [e for e in self._current_entries() if e.status != "in-sync"]
+
     def _populate(self) -> None:
         if self._diff is None:
             return
         entries = self._current_entries()
-        changed = sum(1 for e in entries if e.status != "in-sync")
-        self.status_label.setText(f"{len(entries)} total · {changed} changed")
-        self.table.setRowCount(len(entries))
-        for i, entry in enumerate(entries):
-            key = entry.key
-            self.table.setItem(i, 0, QTableWidgetItem(key[:60]))
+        changed = self._changed_entries()
+        total = len(entries)
+        # Only render changed rows (text-only). Rendering thousands of per-row
+        # button widgets freezes Qt; instead select rows and use the top
+        # Accept/Force buttons.
+        self._rows = changed
+        self.status_label.setText(
+            f"{total} total · {len(changed)} changed  —  select rows, then Accept/Force (or use all)"
+        )
+        self.table.setRowCount(len(changed))
+        for i, entry in enumerate(changed):
+            self.table.setItem(i, 0, QTableWidgetItem(entry.key[:60]))
             self.table.setItem(i, 1, QTableWidgetItem(entry.status))
             self.table.setItem(i, 2, QTableWidgetItem(_diff_local_preview(entry)))
             self.table.setItem(i, 3, QTableWidgetItem(_diff_server_preview(entry)))
-            btns = QWidget()
-            hb = QHBoxLayout(btns)
-            hb.setContentsMargins(0, 0, 0, 0)
-            if entry.status != "in-sync":
-                accept = QPushButton("← Server")
-                force = QPushButton("Local →")
-                accept.clicked.connect(lambda _=False, e=entry: self._accept_one(e))
-                force.clicked.connect(lambda _=False, e=entry: self._force_one(e))
-                hb.addWidget(accept)
-                hb.addWidget(force)
-            self.table.setCellWidget(i, 4, btns)
 
-    def _accept_one(self, entry) -> None:
-        from kelma_sync_v2 import anki_apply
-        try:
-            if entry.resource == "guid":
-                rec = self._client.get_note(entry.key)
-                anki_apply.apply_note(mw.col, rec)
-            elif entry.resource == "notetype_id":
-                rec = self._client.get_notetype(int(entry.key))
-                anki_apply.apply_notetype(mw.col, rec)
-            elif entry.resource == "name":
-                rec = self._client.get_deck(entry.key)
-                anki_apply.apply_deck(mw.col, rec)
-            elif entry.resource == "card_id":
-                rec = self._client.get_card(int(entry.key))
-                anki_apply.apply_card(mw.col, rec)
-            tooltip(f"Accepted server: {entry.key[:20]}")
-        except Exception as err:  # noqa: BLE001
-            tooltip(f"Accept failed: {err}")
-        self._load()
+    def _selected_entries(self) -> list:
+        rows = {idx.row() for idx in self.table.selectedIndexes()}
+        return [self._rows[r] for r in sorted(rows) if 0 <= r < len(self._rows)]
 
-    def _force_one(self, entry) -> None:
-        try:
-            from kelma_sync_v2 import anki_local
-            if entry.resource == "guid":
-                rec = anki_local.note_record(mw.col, entry.key)
-                self._client.put_note(entry.key, notetype_id=rec["notetype_id"],
-                    fields=rec["fields"], tags=rec["tags"],
-                    client_modified_at=rec["client_modified_at"],
-                    base_checksum="", force=True)
-            elif entry.resource == "notetype_id":
-                rec = anki_local.notetype_record(mw.col, int(entry.key))
-                self._client.put_notetype(int(entry.key), name=rec["name"],
-                    definition=rec["definition"],
-                    client_modified_at=rec["client_modified_at"],
-                    base_checksum="", force=True)
-            elif entry.resource == "name":
-                rec = anki_local.deck_record(mw.col, entry.key)
-                self._client.put_deck(entry.key, config=rec["config"],
-                    client_modified_at=rec["client_modified_at"],
-                    base_checksum="", force=True)
-            elif entry.resource == "card_id":
-                rec = anki_local.card_record(mw.col, int(entry.key))
-                self._client.put_card(int(entry.key),
-                    note_guid=rec["note_guid"], deck_name=rec["deck_name"],
-                    ord=rec["ord"], scheduling=rec["scheduling"],
-                    client_modified_at=rec["client_modified_at"])
-            tooltip(f"Forced local: {entry.key[:20]}")
-        except Exception as err:  # noqa: BLE001
-            tooltip(f"Force failed: {err}")
-        self._load()
+    def _resolve_entries(self, entries: list, mode: str) -> None:
+        """Resolve a batch of entries in the background, reloading once at end."""
+        if not entries:
+            tooltip("No changed rows selected.")
+            return
+        client = self._client
+        self.status_label.setText(f"Resolving {len(entries)} item(s)…")
+        self.btn_accept_all.setEnabled(False)
+        self.btn_force_all.setEnabled(False)
+
+        def work():
+            from kelma_sync_v2 import anki_apply, anki_local
+            done = 0
+            for entry in entries:
+                if mode == "accept":
+                    if entry.resource == "guid":
+                        anki_apply.apply_note(mw.col, client.get_note(entry.key))
+                    elif entry.resource == "notetype_id":
+                        anki_apply.apply_notetype(mw.col, client.get_notetype(int(entry.key)))
+                    elif entry.resource == "name":
+                        anki_apply.apply_deck(mw.col, client.get_deck(entry.key))
+                    elif entry.resource == "card_id":
+                        anki_apply.apply_card(mw.col, client.get_card(int(entry.key)))
+                else:  # force
+                    if entry.resource == "guid":
+                        rec = anki_local.note_record(mw.col, entry.key)
+                        if rec:
+                            client.put_note(entry.key, notetype_id=rec["notetype_id"],
+                                fields=rec["fields"], tags=rec["tags"],
+                                client_modified_at=rec["client_modified_at"],
+                                base_checksum="", force=True)
+                    elif entry.resource == "notetype_id":
+                        rec = anki_local.notetype_record(mw.col, int(entry.key))
+                        if rec:
+                            client.put_notetype(int(entry.key), name=rec["name"],
+                                definition=rec["definition"],
+                                client_modified_at=rec["client_modified_at"],
+                                base_checksum="", force=True)
+                    elif entry.resource == "name":
+                        rec = anki_local.deck_record(mw.col, entry.key)
+                        if rec:
+                            client.put_deck(entry.key, config=rec["config"],
+                                client_modified_at=rec["client_modified_at"],
+                                base_checksum="", force=True)
+                    elif entry.resource == "card_id":
+                        rec = anki_local.card_record(mw.col, int(entry.key))
+                        if rec:
+                            client.put_card(int(entry.key),
+                                note_guid=rec["note_guid"], deck_name=rec["deck_name"],
+                                ord=rec["ord"], scheduling=rec["scheduling"],
+                                client_modified_at=rec["client_modified_at"])
+                done += 1
+            return done
+
+        def done_cb(future: Future) -> None:
+            self.btn_accept_all.setEnabled(True)
+            self.btn_force_all.setEnabled(True)
+            try:
+                n = future.result()
+            except Exception as err:  # noqa: BLE001
+                self.status_label.setText(f"Resolve failed: {err}")
+                return
+            tooltip(f"Resolved {n} item(s).")
+            self._load()  # reload once
+
+        mw.taskman.run_in_background(work, done_cb, uses_collection=True)
 
     def _accept_all(self) -> None:
-        for entry in self._current_entries():
-            if entry.status != "in-sync":
-                self._accept_one(entry)
+        sel = self._selected_entries()
+        self._resolve_entries(sel if sel else self._changed_entries(), "accept")
 
     def _force_all(self) -> None:
-        for entry in self._current_entries():
-            if entry.status != "in-sync":
-                self._force_one(entry)
+        sel = self._selected_entries()
+        self._resolve_entries(sel if sel else self._changed_entries(), "force")
 
 
 def _diff_local_preview(entry) -> str:
