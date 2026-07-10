@@ -1897,7 +1897,7 @@ def _v2_test_sync_notes() -> None:
     if client is None:
         return
     try:
-        from kelma_sync_v2.note_sync import NoteSyncConflict, sync_notes_once
+        from kelma_sync_v2.content_sync import ContentSyncConflict, sync_content_once
     except Exception as err:  # noqa: BLE001
         tooltip(f"KelmaSync v2 package import failed: {err}")
         return
@@ -1907,14 +1907,15 @@ def _v2_test_sync_notes() -> None:
     tooltip("KelmaSync v2: syncing notes…")
 
     def _work():
-        return sync_notes_once(mw.col, client, since=since, apply_pulls=True)
+        return sync_content_once(mw.col, client, since=since)
 
     def _done(future: Future) -> None:
         try:
             result = future.result()
-        except NoteSyncConflict as conflict:
-            tooltip(f"KelmaSync v2: {len(conflict.conflicts)} note conflict(s). No checkpoint saved.")
-            V2NoteConflictDialog(mw, client, conflict.conflicts).exec()
+        except ContentSyncConflict as conflict:
+            tooltip(f"KelmaSync: {len(conflict.conflicts)} {conflict.resource} conflict(s). No checkpoint saved.")
+            if conflict.resource == "note":
+                V2NoteConflictDialog(mw, client, conflict.conflicts).exec()
             return
         except Exception as err:  # noqa: BLE001
             tooltip(f"KelmaSync v2 sync failed: {err}")
@@ -1923,8 +1924,8 @@ def _v2_test_sync_notes() -> None:
         cfg2["v2_last_server_time"] = result.server_time
         config.save(cfg2)
         tooltip(
-            f"KelmaSync v2 notes: pushed {result.pushed}, pulled {result.pulled}, "
-            f"skipped {result.skipped}."
+            f"KelmaSync: notetypes pushed {result.notetypes.pushed}, pulled {result.notetypes.pulled}; "
+            f"notes pushed {result.notes.pushed}, pulled {result.notes.pulled}, skipped {result.notes.skipped}."
         )
 
     mw.taskman.run_in_background(_work, _done, uses_collection=True)
