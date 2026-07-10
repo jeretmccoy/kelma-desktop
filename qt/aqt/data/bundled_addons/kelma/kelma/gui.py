@@ -27,6 +27,7 @@ from aqt.qt import (
     QLineEdit,
     QMenu,
     QPushButton,
+    pyqtSignal,
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
@@ -2109,6 +2110,47 @@ def _v2_forget_login() -> None:
     tooltip("KelmaSync v2 login/checkpoint cleared.")
 
 
+class V2SyncProgressDialog(QDialog):
+    _line = pyqtSignal(str)
+    _done = pyqtSignal(str, bool)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("KelmaSync progress")
+        self.resize(720, 420)
+        self._started = datetime.now()
+        layout = QVBoxLayout(self)
+        self.status = QLabel("Starting sync…")
+        layout.addWidget(self.status)
+        self.log = QTextBrowser()
+        layout.addWidget(self.log)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        self.close_btn = buttons.button(QDialogButtonBox.StandardButton.Close)
+        self.close_btn.setEnabled(False)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._line.connect(self._append_line)
+        self._done.connect(self._finish)
+
+    def progress(self, text: str) -> None:
+        self._line.emit(text)
+
+    def complete(self, text: str, ok: bool = True) -> None:
+        self._done.emit(text, ok)
+
+    def _append_line(self, text: str) -> None:
+        elapsed = (datetime.now() - self._started).total_seconds()
+        line = f"{elapsed:6.1f}s  {text}"
+        self.status.setText(text)
+        self.log.append(line)
+        QApplication.processEvents()
+
+    def _finish(self, text: str, ok: bool) -> None:
+        prefix = "✅" if ok else "⚠"
+        self._append_line(f"{prefix} {text}")
+        self.close_btn.setEnabled(True)
+
+
 def _v2_preview(record: dict) -> str:
     fields = record.get("fields") or []
     if isinstance(fields, list) and fields:
@@ -2201,10 +2243,14 @@ def _v2_test_sync_notes() -> None:
     cfg = config.get()
     since = cfg.get("v2_last_server_time") or None
     _V2_ACTIVE_ACTION = "sync"
-    tooltip("KelmaSync: syncing notes…")
+    dlg = V2SyncProgressDialog(mw)
+    dlg.show()
+    dlg.progress("Sync queued. Waiting for Anki collection worker…")
+    tooltip("KelmaSync: syncing… progress window opened.")
 
     def _work():
-        return sync_content_once(mw.col, client, since=since)
+        dlg.progress("Worker started.")
+        return sync_content_once(mw.col, client, since=since, progress=dlg.progress)
 
     def _done(future: Future) -> None:
         global _V2_ACTIVE_ACTION
@@ -2213,30 +2259,36 @@ def _v2_test_sync_notes() -> None:
         try:
             result = future.result()
         except ContentSyncConflict as conflict:
-            tooltip(f"KelmaSync: {len(conflict.conflicts)} {conflict.resource} conflict(s). No checkpoint saved.")
+            msg = f"{len(conflict.conflicts)} {conflict.resource} conflict(s). No checkpoint saved."
+            dlg.complete(msg, ok=False)
+            tooltip(f"KelmaSync: {msg}")
             if conflict.resource == "note":
                 V2NoteConflictDialog(mw, client, conflict.conflicts).exec()
             return
         except Exception as err:  # noqa: BLE001
+            dlg.complete(f"Sync failed: {err}", ok=False)
             tooltip(f"KelmaSync v2 sync failed: {err}")
             return
         cfg2 = config.get()
         cfg2["v2_last_server_time"] = result.server_time
         config.save(cfg2)
-        tooltip(
-            f"KelmaSync: tombstones {result.tombstones.applied}, "
+        msg = (
+            f"tombstones {result.tombstones.applied}, "
             f"decks {result.decks.pushed}/{result.decks.pulled}, "
             f"notetypes {result.notetypes.pushed}/{result.notetypes.pulled}, "
             f"notes {result.notes.pushed}/{result.notes.pulled}, "
             f"cards {result.cards.pushed}/{result.cards.pulled}, "
             f"media {result.media.uploaded}/{result.media.downloaded}."
         )
+        dlg.complete(msg, ok=True)
+        tooltip(f"KelmaSync complete: {msg}")
 
     try:
         mw.taskman.run_in_background(_work, _done, uses_collection=True)
     except Exception as err:  # noqa: BLE001
         if _V2_ACTIVE_ACTION == "sync":
             _V2_ACTIVE_ACTION = None
+        dlg.complete(f"Could not start sync: {err}", ok=False)
         tooltip(f"KelmaSync: could not start sync: {err}")
 
 
