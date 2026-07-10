@@ -27,7 +27,6 @@ from aqt.qt import (
     QLineEdit,
     QMenu,
     QPushButton,
-    pyqtSignal,
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
@@ -41,6 +40,15 @@ from aqt.utils import tooltip
 from . import auth, branding, capabilities, config, consts, deckbadges, engine, features, inspect, state
 
 _orig_sync = None
+_V2_ACTIVE_ACTION: str | None = None
+
+
+def _v2_active_message() -> str | None:
+    if _V2_ACTIVE_ACTION == "sync":
+        return "A KelmaSync sync is already running. Please wait for its completion toast, then compare."
+    if _V2_ACTIVE_ACTION == "compare":
+        return "A KelmaSync compare is already running. Please wait for it to finish."
+    return None
 
 _CHECKABLE = Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
 # table column per service
@@ -1610,7 +1618,7 @@ def _v2_client_or_login():
     cfg = config.get()
     endpoint = cfg.get("v2_url") or "http://localhost:8081"
     token = cfg.get("v2_token") or ""
-    client = V2Client(endpoint, token=token)
+    client = V2Client(endpoint, token=token, timeout=8)
     if token:
         return client
 
@@ -1710,17 +1718,11 @@ class V2NoteConflictDialog(QDialog):
 class V2FullDiffDialog(QDialog):
     """Full server-vs-local compare with per-item and batch resolution."""
 
-    # Cross-thread progress: emitted from worker threads, delivered on the main
-    # thread (Qt queues signals across threads). This is bulletproof even while
-    # the dialog runs its own modal exec loop.
-    _progress = pyqtSignal(str)
-
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("KelmaSync compare")
         self.resize(1000, 640)
         self._client = None
-        self._progress.connect(self._on_progress)
 
         layout = QVBoxLayout(self)
         top_row = QHBoxLayout()
@@ -1760,78 +1762,83 @@ class V2FullDiffDialog(QDialog):
         self._load()
 
     def _on_progress(self, text: str) -> None:
-        """Slot: update the status label on the main thread."""
         self.status_label.setText(text)
+        QApplication.processEvents()
 
     def _load(self) -> None:
+        # Hard guard: a sync task owns Anki's collection queue. If Compare starts
+        # while sync is running, do NOT queue behind it and look hung.
+        global _V2_ACTIVE_ACTION
+        p = self._on_progress
+        blocked = _v2_active_message()
+        if blocked:
+            p(f"⚠ {blocked}")
+            self.btn_accept_all.setEnabled(False)
+            self.btn_force_all.setEnabled(False)
+            return
+        _V2_ACTIVE_ACTION = "compare"
         try:
-            self.status_label.setText("Connecting…")
-            client = _v2_client_or_login()
-        except Exception as err:  # noqa: BLE001
-            self.status_label.setText(f"Login error: {err}")
-            return
-        if client is None:
-            self.status_label.setText("Not logged in. Use the sync menu → Settings to log in.")
-            return
-        self._client = client
-        self.status_label.setText("Starting compare…")
-
-        emit = self._progress.emit  # thread-safe cross-thread label updates
-
-        def work():
-            import time as _t
-            # --- server manifest ---
-            emit("Contacting server…")
-            t0 = _t.time()
             try:
+                p("Connecting…")
+                client = _v2_client_or_login()
+            except Exception as err:  # noqa: BLE001
+                p(f"⚠ Login error: {err}")
+                return
+            if client is None:
+                p("Not logged in. Open the sync menu → Settings to log in.")
+                return
+            self._client = client
+
+            import time as _t
+            try:
+                p("Contacting server…")
+                t0 = _t.time()
                 server = client.manifest()
             except Exception as err:  # noqa: BLE001
-                raise RuntimeError(f"server fetch failed: {err}") from err
-            sn = len(server.get("notes", []))
-            sc = len(server.get("cards", []))
-            snt = len(server.get("notetypes", []))
-            sd = len(server.get("decks", []))
-            emit(f"Server: {sn} notes, {sc} cards, {snt} notetypes, {sd} decks ({_t.time()-t0:.1f}s)")
-
-            # --- local manifest (detailed per-phase via callback) ---
-            from kelma_sync_v2 import anki_local
-            try:
-                local = anki_local.local_manifest(mw.col, progress=emit)
-            except Exception as err:  # noqa: BLE001
-                raise RuntimeError(f"reading local collection failed: {err}") from err
-            ln = len(local.get("notes", []))
-            lc = len(local.get("cards", []))
-            emit(f"Local: {ln} notes, {lc} cards · comparing…")
-
-            # --- diff each resource with its own progress line ---
-            from kelma_sync_v2.full_diff import _diff_keyed
-            emit("Comparing notes…")
-            notes = _diff_keyed(local.get("notes", []), server.get("notes", []), "guid")
-            emit("Comparing cards…")
-            cards = _diff_keyed(local.get("cards", []), server.get("cards", []), "card_id")
-            emit("Comparing notetypes…")
-            notetypes = _diff_keyed(local.get("notetypes", []), server.get("notetypes", []), "notetype_id")
-            emit("Comparing decks…")
-            decks = _diff_keyed(local.get("decks", []), server.get("decks", []), "name")
-            emit("Building table…")
-            return type("FullDiff", (), {
-                "notes": notes, "cards": cards, "notetypes": notetypes, "decks": decks,
-                "server_time": server.get("server_time", ""),
-            })()
-
-        def done(future: Future) -> None:
-            try:
-                self._diff = future.result()
-            except Exception as err:  # noqa: BLE001
-                self.status_label.setText(f"⚠ Compare failed: {err}")
-                tooltip(f"KelmaSync compare failed: {err}")
+                p(f"⚠ Server fetch failed: {err}")
+                tooltip(f"KelmaSync compare: server fetch failed: {err}")
                 return
+            p(
+                f"Server: {len(server.get('notes', []))} notes, "
+                f"{len(server.get('cards', []))} cards, "
+                f"{len(server.get('notetypes', []))} notetypes, "
+                f"{len(server.get('decks', []))} decks ({_t.time()-t0:.1f}s)"
+            )
+
             try:
+                from kelma_sync_v2 import anki_local
+                local = anki_local.local_manifest(mw.col, progress=p)
+            except Exception as err:  # noqa: BLE001
+                p(f"⚠ Reading local collection failed: {err}")
+                tooltip(f"KelmaSync compare: local read failed: {err}")
+                return
+
+            try:
+                from kelma_sync_v2.full_diff import _diff_keyed
+                p("Comparing notes…")
+                notes = _diff_keyed(local.get("notes", []), server.get("notes", []), "guid")
+                p("Comparing cards…")
+                cards = _diff_keyed(local.get("cards", []), server.get("cards", []), "card_id")
+                p("Comparing notetypes…")
+                notetypes = _diff_keyed(local.get("notetypes", []), server.get("notetypes", []), "notetype_id")
+                p("Comparing decks…")
+                decks = _diff_keyed(local.get("decks", []), server.get("decks", []), "name")
+                self._diff = type("FullDiff", (), {
+                    "notes": notes, "cards": cards, "notetypes": notetypes, "decks": decks,
+                    "server_time": server.get("server_time", ""),
+                })()
+            except Exception as err:  # noqa: BLE001
+                p(f"⚠ Compare failed: {err}")
+                return
+
+            try:
+                p("Building table…")
                 self._populate()
             except Exception as err:  # noqa: BLE001
-                self.status_label.setText(f"⚠ Failed to render: {err}")
-
-        mw.taskman.run_in_background(work, done, uses_collection=True)
+                p(f"⚠ Failed to render: {err}")
+        finally:
+            if _V2_ACTIVE_ACTION == "compare":
+                _V2_ACTIVE_ACTION = None
 
     def _resource_key(self) -> str:
         return {0: "notes", 1: "notetypes", 2: "decks", 3: "cards"}.get(
@@ -2132,9 +2139,12 @@ def _v2_sync_menu() -> None:
     status = "logged in" if cfg.get("v2_token") else "not logged in"
     endpoint = cfg.get("v2_url") or "http://localhost:8081"
     user = cfg.get("v2_username") or "(no username saved)"
+    active = _v2_active_message()
+    active_html = f"<br><span style='color:#d98'>⚠ {active}</span>" if active else ""
     status_label = QLabel(
         f"<b>{status}</b> · {user}<br>"
         f"<span style='color:#888'>{endpoint}</span>"
+        f"{active_html}"
     )
     status_wrap = QWidget()
     status_layout = QHBoxLayout(status_wrap)
@@ -2149,6 +2159,12 @@ def _v2_sync_menu() -> None:
     menu.setMinimumWidth(380)
     act_sync = menu.addAction("Sync notes")
     act_compare = menu.addAction("Compare everything…")
+    if _V2_ACTIVE_ACTION == "sync":
+        act_sync.setEnabled(False)
+        act_compare.setEnabled(False)
+    elif _V2_ACTIVE_ACTION == "compare":
+        act_sync.setEnabled(False)
+        act_compare.setEnabled(False)
     menu.addSeparator()
     act_settings = menu.addAction("Settings…")
     act_forget = menu.addAction("Forget login")
@@ -2167,11 +2183,12 @@ def _v2_sync_menu() -> None:
 
 
 def _v2_test_sync_notes() -> None:
-    """Experimental note-only v2 sync entrypoint.
-
-    This is intentionally separate from existing v1 sync. It syncs notes only,
-    reports counts, and stores v2_last_server_time only after a clean pass.
-    """
+    """Experimental note-only v2 sync entrypoint."""
+    global _V2_ACTIVE_ACTION
+    blocked = _v2_active_message()
+    if blocked:
+        tooltip(f"KelmaSync: {blocked}")
+        return
     client = _v2_client_or_login()
     if client is None:
         return
@@ -2183,12 +2200,16 @@ def _v2_test_sync_notes() -> None:
 
     cfg = config.get()
     since = cfg.get("v2_last_server_time") or None
+    _V2_ACTIVE_ACTION = "sync"
     tooltip("KelmaSync: syncing notes…")
 
     def _work():
         return sync_content_once(mw.col, client, since=since)
 
     def _done(future: Future) -> None:
+        global _V2_ACTIVE_ACTION
+        if _V2_ACTIVE_ACTION == "sync":
+            _V2_ACTIVE_ACTION = None
         try:
             result = future.result()
         except ContentSyncConflict as conflict:
@@ -2211,7 +2232,12 @@ def _v2_test_sync_notes() -> None:
             f"media {result.media.uploaded}/{result.media.downloaded}."
         )
 
-    mw.taskman.run_in_background(_work, _done, uses_collection=True)
+    try:
+        mw.taskman.run_in_background(_work, _done, uses_collection=True)
+    except Exception as err:  # noqa: BLE001
+        if _V2_ACTIVE_ACTION == "sync":
+            _V2_ACTIVE_ACTION = None
+        tooltip(f"KelmaSync: could not start sync: {err}")
 
 
 # -----------------------------------------------------------------------------
