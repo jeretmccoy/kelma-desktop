@@ -1928,7 +1928,8 @@ def _v2_test_sync_notes() -> None:
             f"decks {result.decks.pushed}/{result.decks.pulled}, "
             f"notetypes {result.notetypes.pushed}/{result.notetypes.pulled}, "
             f"notes {result.notes.pushed}/{result.notes.pulled}, "
-            f"cards {result.cards.pushed}/{result.cards.pulled}."
+            f"cards {result.cards.pushed}/{result.cards.pulled}, "
+            f"media {result.media.uploaded}/{result.media.downloaded}."
         )
 
     mw.taskman.run_in_background(_work, _done, uses_collection=True)
