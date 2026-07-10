@@ -1763,6 +1763,7 @@ class V2FullDiffDialog(QDialog):
             self.status_label.setText("Not logged in.")
             return
         self._client = client
+        self.status_label.setText("Fetching server manifest…")
 
         # Step 1: fetch server manifest in background (no collection lock needed)
         def fetch_server():
@@ -1774,6 +1775,12 @@ class V2FullDiffDialog(QDialog):
             except Exception as err:  # noqa: BLE001
                 self.status_label.setText(f"Compare failed: {err}")
                 return
+            counts = (
+                f"server: {len(server.get('notes', []))} notes, "
+                f"{len(server.get('cards', []))} cards"
+            )
+            self.status_label.setText(f"{counts} · building local manifest…")
+
             # Step 2: build local manifest in background (collection access)
             def fetch_local():
                 from kelma_sync_v2 import anki_local
@@ -1785,6 +1792,7 @@ class V2FullDiffDialog(QDialog):
                 except Exception as err:  # noqa: BLE001
                     self.status_label.setText(f"Local manifest failed: {err}")
                     return
+                self.status_label.setText("Computing diff…")
                 # Step 3: compute diff on main thread (fast, no I/O)
                 from kelma_sync_v2.full_diff import _diff_keyed
                 self._diff = type(
