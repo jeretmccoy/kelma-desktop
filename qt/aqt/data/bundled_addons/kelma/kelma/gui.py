@@ -1706,6 +1706,114 @@ class V2NoteConflictDialog(QDialog):
         self.accept()
 
 
+class V2SettingsDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("KelmaSync v2 settings")
+        cfg = config.get()
+        layout = QVBoxLayout(self)
+        grid = QGridLayout()
+        layout.addLayout(grid)
+
+        self.endpoint = QLineEdit(cfg.get("v2_url", "http://localhost:8081"))
+        self.username = QLineEdit(cfg.get("v2_username", ""))
+        self.label = QLineEdit(cfg.get("v2_client_label", "Anki plugin"))
+        self.last = QLabel(cfg.get("v2_last_server_time", "") or "(none)")
+        self.token = QLabel("saved" if cfg.get("v2_token") else "not logged in")
+
+        for row, (name, widget) in enumerate([
+            ("Endpoint", self.endpoint),
+            ("Username", self.username),
+            ("Client label", self.label),
+            ("Token", self.token),
+            ("Last server time", self.last),
+        ]):
+            grid.addWidget(QLabel(name), row, 0)
+            grid.addWidget(widget, row, 1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _save(self) -> None:
+        cfg = config.get()
+        cfg["v2_url"] = self.endpoint.text().strip() or "http://localhost:8081"
+        cfg["v2_username"] = self.username.text().strip()
+        cfg["v2_client_label"] = self.label.text().strip() or "Anki plugin"
+        config.save(cfg)
+        tooltip("KelmaSync v2 settings saved.")
+        self.accept()
+
+
+class V2CompareDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("KelmaSync v2 compare notes")
+        self.resize(900, 520)
+        layout = QVBoxLayout(self)
+        self.status = QLabel("Loading…")
+        layout.addWidget(self.status)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["GUID", "Status", "Local", "Server"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._load()
+
+    def _load(self) -> None:
+        client = _v2_client_or_login()
+        if client is None:
+            self.status.setText("Not logged in.")
+            return
+
+        def work():
+            from kelma_sync_v2 import anki_local
+            local = {x["guid"]: x for x in anki_local.note_manifest(mw.col)}
+            server_manifest = client.manifest()
+            server = {x["guid"]: x for x in server_manifest.get("notes", [])}
+            rows = []
+            for guid in sorted(set(local) | set(server)):
+                l = local.get(guid)
+                s = server.get(guid)
+                if l and s and l.get("checksum") == s.get("checksum"):
+                    status = "in-sync"
+                elif l and not s:
+                    status = "local-only"
+                elif s and not l:
+                    status = "server-only"
+                else:
+                    status = "changed"
+                rows.append((guid, status, l, s))
+            return rows
+
+        def done(future: Future) -> None:
+            try:
+                rows = future.result()
+            except Exception as err:  # noqa: BLE001
+                self.status.setText(f"Compare failed: {err}")
+                return
+            self.table.setRowCount(len(rows))
+            changed = 0
+            for i, (guid, status, l, s) in enumerate(rows):
+                if status != "in-sync":
+                    changed += 1
+                self.table.setItem(i, 0, QTableWidgetItem(guid))
+                self.table.setItem(i, 1, QTableWidgetItem(status))
+                self.table.setItem(i, 2, QTableWidgetItem(str((l or {}).get("modified_at", ""))))
+                self.table.setItem(i, 3, QTableWidgetItem(str((s or {}).get("modified_at", ""))))
+            self.status.setText(f"{len(rows)} notes · {changed} changed")
+
+        mw.taskman.run_in_background(work, done, uses_collection=True)
+
+
 def _v2_forget_login() -> None:
     cfg = config.get()
     cfg["v2_token"] = ""
@@ -1784,6 +1892,16 @@ def _build_menu() -> None:
     act_sync = QAction("V2 sync notes", mw)
     act_sync.triggered.connect(_v2_test_sync_notes)
     menu.addAction(act_sync)
+
+    act_compare = QAction("V2 compare notes…", mw)
+    act_compare.triggered.connect(lambda: V2CompareDialog(mw).exec())
+    menu.addAction(act_compare)
+
+    menu.addSeparator()
+
+    act_settings = QAction("V2 settings…", mw)
+    act_settings.triggered.connect(lambda: V2SettingsDialog(mw).exec())
+    menu.addAction(act_settings)
 
     act_logout = QAction("V2 forget login", mw)
     act_logout.triggered.connect(_v2_forget_login)
