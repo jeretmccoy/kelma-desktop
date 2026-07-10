@@ -516,13 +516,13 @@ class ConflictDialog(QDialog):
         self.search.textChanged.connect(self._populate)
         outer.addWidget(self.search)
 
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["Note preview", "Difference", "Cards L/S", "Local modified", "Server modified"]
+            ["Note preview", "Difference", "Cards L/S", "GUID / nid", "Local modified", "Server modified"]
         )
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for col in (1, 2, 3, 4):
+        for col in (1, 2, 3, 4, 5):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -588,8 +588,16 @@ class ConflictDialog(QDialog):
             cards = QTableWidgetItem(self._card_count_text(diff))
             cards.setToolTip("Cards in this deck: local / server")
             self.table.setItem(row, 2, cards)
-            self.table.setItem(row, 3, QTableWidgetItem(_format_note_mod(diff.get("local"))))
-            self.table.setItem(row, 4, QTableWidgetItem(_format_note_mod(diff.get("server"))))
+            local_nid = (diff.get("local") or {}).get("nid", "—")
+            server_nid = (diff.get("server") or {}).get("nid", "—")
+            guid_text = diff.get("guid") or "(empty GUID)"
+            guid_item = QTableWidgetItem(f"{guid_text} · L {local_nid} / S {server_nid}")
+            guid_item.setToolTip(
+                f"GUID: {diff.get('guid') or '(empty)'}\nLocal nid: {local_nid}\nServer nid: {server_nid}"
+            )
+            self.table.setItem(row, 3, guid_item)
+            self.table.setItem(row, 4, QTableWidgetItem(_format_note_mod(diff.get("local"))))
+            self.table.setItem(row, 5, QTableWidgetItem(_format_note_mod(diff.get("server"))))
 
         counts = Counter(diff["status"] for diff in self._note_diffs)
         changed = len(self._note_diffs) - counts["in-sync"]
@@ -637,6 +645,116 @@ class ConflictDialog(QDialog):
         dlg = NoteDiffDialog(
             self, guid, local_note, self._hkey, self._endpoint,
             diff=diff, deck_diff=self._deck_diff,
+        )
+        dlg.exec()
+
+
+class ServerSearchDialog(QDialog):
+    """Search/browse notes that exist in the server manifest.
+
+    This is intentionally available from the top-level Compare dialog, even
+    when no deck conflict is selected. It gives users a direct inventory of
+    what the server says exists, with card counts and GUID/nid identity.
+    """
+
+    def __init__(self, parent, local: dict, server: dict, hkey: str, endpoint: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Kelma — Search server notes")
+        self.resize(950, 620)
+        self._local = local
+        self._server = server
+        self._hkey = hkey
+        self._endpoint = endpoint
+        self._rows = self._build_rows()
+
+        outer = QVBoxLayout(self)
+        hint = QLabel(
+            "Search the server manifest directly. Double-click a row to fetch "
+            "the server note fields and card-template list."
+        )
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search preview, GUID, nid, deck ids, card counts…")
+        self.search.textChanged.connect(self._populate)
+        outer.addWidget(self.search)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Server preview", "GUID", "Server nid", "Cards", "Deck ids"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in (1, 2, 3, 4):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.cellDoubleClicked.connect(self._row_clicked)
+        outer.addWidget(self.table)
+
+        self.summary = QLabel()
+        outer.addWidget(self.summary)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+        self._populate()
+
+    def _build_rows(self) -> list[dict]:
+        rows = []
+        for note in self._server.get("notes", []) or []:
+            total = _total_card_count(note)
+            rows.append(
+                {
+                    "note": note,
+                    "preview": note.get("preview") or "(no preview)",
+                    "guid": note.get("guid") or "",
+                    "nid": note.get("nid", ""),
+                    "cards": total,
+                    "decks": note.get("decks", []) or [],
+                }
+            )
+        rows.sort(key=lambda r: (str(r["preview"]).lower(), str(r["guid"]), int(r["nid"] or 0)))
+        return rows
+
+    def _row_text(self, row: dict) -> str:
+        return " ".join(
+            str(x) for x in (
+                row["preview"], row["guid"], row["nid"], row["cards"], row["decks"]
+            )
+        ).lower()
+
+    def _populate(self, _text: str = "") -> None:
+        query = self.search.text().strip().lower()
+        rows = [r for r in self._rows if not query or query in self._row_text(r)]
+        self._visible_rows = rows
+        self.table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            self.table.setItem(i, 0, QTableWidgetItem(row["preview"]))
+            guid_item = QTableWidgetItem(row["guid"] or "(empty GUID)")
+            guid_item.setToolTip(row["guid"] or "(empty GUID)")
+            self.table.setItem(i, 1, guid_item)
+            self.table.setItem(i, 2, QTableWidgetItem(str(row["nid"])))
+            self.table.setItem(i, 3, QTableWidgetItem(str(row["cards"])))
+            self.table.setItem(i, 4, QTableWidgetItem(", ".join(str(d) for d in row["decks"])))
+        server_cards = sum(int(r["cards"] or 0) for r in self._rows)
+        self.summary.setText(
+            f"Showing {len(rows)} of {len(self._rows)} server notes · "
+            f"{server_cards} server cards total"
+        )
+
+    def _row_clicked(self, row: int, _col: int) -> None:
+        if row >= len(getattr(self, "_visible_rows", [])):
+            return
+        note = self._visible_rows[row]["note"]
+        guid = note.get("guid") or ""
+        dlg = NoteDiffDialog(
+            self,
+            guid,
+            None,
+            self._hkey,
+            self._endpoint,
+            diff={"guid": guid, "status": "server-only", "server": note, "local": None},
+            deck_diff={},
         )
         dlg.exec()
 
@@ -701,6 +819,11 @@ class CompareDialog(QDialog):
         outer.addWidget(self.status_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        self.search_server_btn = buttons.addButton(
+            "Search server…", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        self.search_server_btn.setEnabled(False)
+        self.search_server_btn.clicked.connect(self._search_server)
         self.sync_btn = buttons.addButton(
             "Sync now", QDialogButtonBox.ButtonRole.AcceptRole
         )
@@ -749,6 +872,7 @@ class CompareDialog(QDialog):
         n_matching = len(self._diffs) - n_changed
         self.show_matching.setEnabled(n_matching > 0)
         self.sync_btn.setEnabled(n_changed > 0)
+        self.search_server_btn.setEnabled(True)
         self._populate()
 
     def _populate(self, _checked: bool = False) -> None:
@@ -800,6 +924,18 @@ class CompareDialog(QDialog):
             self,
             deck_diff,
             self._local_manifest,
+            self._server_manifest,
+            self._hkey,
+            self._endpoint,
+        ).exec()
+
+    def _search_server(self) -> None:
+        if not getattr(self, "_server_manifest", None):
+            tooltip("Server manifest is not loaded yet.")
+            return
+        ServerSearchDialog(
+            self,
+            getattr(self, "_local_manifest", {}),
             self._server_manifest,
             self._hkey,
             self._endpoint,
