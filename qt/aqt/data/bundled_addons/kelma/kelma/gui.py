@@ -1718,7 +1718,6 @@ class V2SettingsDialog(QDialog):
         self.endpoint = QLineEdit(cfg.get("v2_url", "http://localhost:8081"))
         self.username = QLineEdit(cfg.get("v2_username", ""))
         self.label = QLineEdit(cfg.get("v2_client_label", "Anki plugin"))
-        self.test_deck = QLineEdit(cfg.get("v2_test_deck", "Kelma V2 Test"))
         self.last = QLabel(cfg.get("v2_last_server_time", "") or "(none)")
         self.token = QLabel("saved" if cfg.get("v2_token") else "not logged in")
 
@@ -1726,7 +1725,6 @@ class V2SettingsDialog(QDialog):
             ("Endpoint", self.endpoint),
             ("Username", self.username),
             ("Client label", self.label),
-            ("Test deck", self.test_deck),
             ("Token", self.token),
             ("Last server time", self.last),
         ]):
@@ -1745,7 +1743,6 @@ class V2SettingsDialog(QDialog):
         cfg["v2_url"] = self.endpoint.text().strip() or "http://localhost:8081"
         cfg["v2_username"] = self.username.text().strip()
         cfg["v2_client_label"] = self.label.text().strip() or "Anki plugin"
-        cfg["v2_test_deck"] = self.test_deck.text().strip() or "Kelma V2 Test"
         config.save(cfg)
         tooltip("KelmaSync v2 settings saved.")
         self.accept()
@@ -1779,16 +1776,11 @@ class V2CompareDialog(QDialog):
 
         def work():
             from kelma_sync_v2 import anki_local
-            cfg = config.get()
-            test_deck = cfg.get("v2_test_deck") or "Kelma V2 Test"
-            local = {x["guid"]: x for x in anki_local.note_manifest(mw.col, deck_name=test_deck)}
+            local = {x["guid"]: x for x in anki_local.note_manifest(mw.col)}
             server_manifest = client.manifest()
             server = {x["guid"]: x for x in server_manifest.get("notes", [])}
             rows = []
-            # Safety: compare only notes present in the configured local test
-            # deck. Until deck/card sync exists, server-only notes cannot be
-            # reliably attributed to a deck.
-            for guid in sorted(set(local)):
+            for guid in sorted(set(local) | set(server)):
                 l = local.get(guid)
                 s = server.get(guid)
                 if l and s and l.get("checksum") == s.get("checksum"):
@@ -1861,11 +1853,9 @@ def _v2_sync_menu() -> None:
     status = "logged in" if cfg.get("v2_token") else "not logged in"
     endpoint = cfg.get("v2_url") or "http://localhost:8081"
     user = cfg.get("v2_username") or "(no username saved)"
-    test_deck = cfg.get("v2_test_deck") or "Kelma V2 Test"
     status_label = QLabel(
         f"<b>{status}</b> · {user}<br>"
-        f"<span style='color:#888'>{endpoint}</span><br>"
-        f"<span style='color:#888'>Deck: {test_deck}</span>"
+        f"<span style='color:#888'>{endpoint}</span>"
     )
     status_wrap = QWidget()
     status_layout = QHBoxLayout(status_wrap)
@@ -1914,19 +1904,10 @@ def _v2_test_sync_notes() -> None:
 
     cfg = config.get()
     since = cfg.get("v2_last_server_time") or None
-    test_deck = cfg.get("v2_test_deck") or "Kelma V2 Test"
-    tooltip(f"KelmaSync: syncing test deck '{test_deck}'…")
+    tooltip("KelmaSync: syncing notes…")
 
     def _work():
-        return sync_content_once(
-            mw.col,
-            client,
-            since=since,
-            deck_name=test_deck,
-            # Until card/deck sync exists, don't auto-import arbitrary
-            # server-only notes; we only push/compare this local test deck.
-            apply_note_pulls=False,
-        )
+        return sync_content_once(mw.col, client, since=since)
 
     def _done(future: Future) -> None:
         try:

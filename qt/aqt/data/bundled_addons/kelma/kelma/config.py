@@ -44,7 +44,6 @@ def get() -> dict[str, Any]:
     cfg.setdefault("v2_token", "")
     cfg.setdefault("v2_client_id", "")
     cfg.setdefault("v2_client_label", "Anki plugin")
-    cfg.setdefault("v2_test_deck", "Kelma V2 Test")
     cfg.setdefault("v2_last_server_time", "")
     return cfg
 
