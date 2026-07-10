@@ -1706,6 +1706,194 @@ class V2NoteConflictDialog(QDialog):
         self.accept()
 
 
+class V2FullDiffDialog(QDialog):
+    """Full server-vs-local compare with per-item and batch resolution.
+
+    Fetches the server manifest, diffs every resource type, and lets the user:
+      - Accept server for individual items or all changed
+      - Force local for individual items or all changed
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("KelmaSync compare")
+        self.resize(1000, 640)
+        self._client = None
+
+        layout = QVBoxLayout(self)
+        top_row = QHBoxLayout()
+        top_row.addWidget(QLabel("Resource:"))
+        self.resource_combo = QComboBox()
+        self.resource_combo.addItems(["Notes", "Notetypes", "Decks", "Cards"])
+        self.resource_combo.currentIndexChanged.connect(self._populate)
+        top_row.addWidget(self.resource_combo)
+        top_row.addStretch()
+
+        self.btn_accept_all = QPushButton("Accept all server")
+        self.btn_accept_all.clicked.connect(self._accept_all)
+        top_row.addWidget(self.btn_accept_all)
+        self.btn_force_all = QPushButton("Force all local")
+        self.btn_force_all.clicked.connect(self._force_all)
+        top_row.addWidget(self.btn_force_all)
+        layout.addLayout(top_row)
+
+        self.status_label = QLabel("Loading…")
+        layout.addWidget(self.status_label)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Key", "Status", "Local", "Server", "Actions"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        layout.addWidget(self.table)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._diff = None
+        self._load()
+
+    def _load(self) -> None:
+        client = _v2_client_or_login()
+        if client is None:
+            self.status_label.setText("Not logged in.")
+            return
+        self._client = client
+
+        def work():
+            from kelma_sync_v2.full_diff import build_full_diff
+            return build_full_diff(mw.col, client)
+
+        def done(future: Future) -> None:
+            try:
+                self._diff = future.result()
+            except Exception as err:  # noqa: BLE001
+                self.status_label.setText(f"Compare failed: {err}")
+                return
+            self._populate()
+
+        mw.taskman.run_in_background(work, done, uses_collection=True)
+
+    def _resource_key(self) -> str:
+        return {0: "notes", 1: "notetypes", 2: "decks", 3: "cards"}.get(
+            self.resource_combo.currentIndex(), "notes"
+        )
+
+    def _current_entries(self) -> list:
+        if self._diff is None:
+            return []
+        key = self._resource_key()
+        return getattr(self._diff, key, [])
+
+    def _populate(self) -> None:
+        if self._diff is None:
+            return
+        entries = self._current_entries()
+        changed = sum(1 for e in entries if e.status != "in-sync")
+        self.status_label.setText(f"{len(entries)} total · {changed} changed")
+        self.table.setRowCount(len(entries))
+        for i, entry in enumerate(entries):
+            key = entry.key
+            self.table.setItem(i, 0, QTableWidgetItem(key[:60]))
+            self.table.setItem(i, 1, QTableWidgetItem(entry.status))
+            self.table.setItem(i, 2, QTableWidgetItem(_diff_local_preview(entry)))
+            self.table.setItem(i, 3, QTableWidgetItem(_diff_server_preview(entry)))
+            btns = QWidget()
+            hb = QHBoxLayout(btns)
+            hb.setContentsMargins(0, 0, 0, 0)
+            if entry.status != "in-sync":
+                accept = QPushButton("← Server")
+                force = QPushButton("Local →")
+                accept.clicked.connect(lambda _=False, e=entry: self._accept_one(e))
+                force.clicked.connect(lambda _=False, e=entry: self._force_one(e))
+                hb.addWidget(accept)
+                hb.addWidget(force)
+            self.table.setCellWidget(i, 4, btns)
+
+    def _accept_one(self, entry) -> None:
+        from kelma_sync_v2 import anki_apply
+        try:
+            if entry.resource == "guid":
+                rec = self._client.get_note(entry.key)
+                anki_apply.apply_note(mw.col, rec)
+            elif entry.resource == "notetype_id":
+                rec = self._client.get_notetype(int(entry.key))
+                anki_apply.apply_notetype(mw.col, rec)
+            elif entry.resource == "name":
+                rec = self._client.get_deck(entry.key)
+                anki_apply.apply_deck(mw.col, rec)
+            elif entry.resource == "card_id":
+                rec = self._client.get_card(int(entry.key))
+                anki_apply.apply_card(mw.col, rec)
+            tooltip(f"Accepted server: {entry.key[:20]}")
+        except Exception as err:  # noqa: BLE001
+            tooltip(f"Accept failed: {err}")
+        self._load()
+
+    def _force_one(self, entry) -> None:
+        try:
+            from kelma_sync_v2 import anki_local
+            if entry.resource == "guid":
+                rec = anki_local.note_record(mw.col, entry.key)
+                self._client.put_note(entry.key, notetype_id=rec["notetype_id"],
+                    fields=rec["fields"], tags=rec["tags"],
+                    client_modified_at=rec["client_modified_at"],
+                    base_checksum="", force=True)
+            elif entry.resource == "notetype_id":
+                rec = anki_local.notetype_record(mw.col, int(entry.key))
+                self._client.put_notetype(int(entry.key), name=rec["name"],
+                    definition=rec["definition"],
+                    client_modified_at=rec["client_modified_at"],
+                    base_checksum="", force=True)
+            elif entry.resource == "name":
+                rec = anki_local.deck_record(mw.col, entry.key)
+                self._client.put_deck(entry.key, config=rec["config"],
+                    client_modified_at=rec["client_modified_at"],
+                    base_checksum="", force=True)
+            elif entry.resource == "card_id":
+                rec = anki_local.card_record(mw.col, int(entry.key))
+                self._client.put_card(int(entry.key),
+                    note_guid=rec["note_guid"], deck_name=rec["deck_name"],
+                    ord=rec["ord"], scheduling=rec["scheduling"],
+                    client_modified_at=rec["client_modified_at"])
+            tooltip(f"Forced local: {entry.key[:20]}")
+        except Exception as err:  # noqa: BLE001
+            tooltip(f"Force failed: {err}")
+        self._load()
+
+    def _accept_all(self) -> None:
+        for entry in self._current_entries():
+            if entry.status != "in-sync":
+                self._accept_one(entry)
+
+    def _force_all(self) -> None:
+        for entry in self._current_entries():
+            if entry.status != "in-sync":
+                self._force_one(entry)
+
+
+def _diff_local_preview(entry) -> str:
+    l = entry.local
+    if l is None:
+        return "(missing)"
+    if "checksum" in l:
+        return l.get("modified_at", "")
+    return l.get("modified_at", str(l)[:80])
+
+
+def _diff_server_preview(entry) -> str:
+    s = entry.server
+    if s is None:
+        return "(missing)"
+    if "checksum" in s:
+        return s.get("modified_at", "")
+    return s.get("modified_at", str(s)[:80])
+
+
 class V2SettingsDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1869,7 +2057,7 @@ def _v2_sync_menu() -> None:
 
     menu.setMinimumWidth(380)
     act_sync = menu.addAction("Sync notes")
-    act_compare = menu.addAction("Compare notes…")
+    act_compare = menu.addAction("Compare everything…")
     menu.addSeparator()
     act_settings = menu.addAction("Settings…")
     act_forget = menu.addAction("Forget login")
@@ -1954,8 +2142,8 @@ def _build_menu() -> None:
     act_sync.triggered.connect(_v2_test_sync_notes)
     menu.addAction(act_sync)
 
-    act_compare = QAction("Compare notes…", mw)
-    act_compare.triggered.connect(lambda: V2CompareDialog(mw).exec())
+    act_compare = QAction("Compare everything…", mw)
+    act_compare.triggered.connect(lambda: V2FullDiffDialog(mw).exec())
     menu.addAction(act_compare)
 
     menu.addSeparator()
