@@ -1840,7 +1840,7 @@ def _v2_sync_menu() -> None:
     """
     cfg = config.get()
     menu = QMenu(mw)
-    menu.setStyleSheet("QMenu::item { padding-left: 18px; padding-right: 18px; padding-top: 5px; padding-bottom: 5px; }")
+    menu.setStyleSheet("QMenu::item { padding-left: 18px; padding-right: 18px; padding-top: 5px; padding-bottom: 5px; } QMenu::item:selected { background-color: rgba(255,255,255,0.12); }")
     if branding.logo_enabled():
         menu.setIcon(branding.star_icon())
 
@@ -1945,7 +1945,7 @@ def _build_menu() -> None:
     surface is unambiguously testing the new v2 REST protocol.
     """
     menu = QMenu("&Kelma", mw)
-    menu.setStyleSheet("QMenu::item { padding-left: 18px; padding-right: 18px; padding-top: 5px; padding-bottom: 5px; }")
+    menu.setStyleSheet("QMenu::item { padding-left: 18px; padding-right: 18px; padding-top: 5px; padding-bottom: 5px; } QMenu::item:selected { background-color: rgba(255,255,255,0.12); }")
     if branding.logo_enabled():
         menu.setIcon(branding.star_icon())
     mw.form.menuTools.addMenu(menu)
