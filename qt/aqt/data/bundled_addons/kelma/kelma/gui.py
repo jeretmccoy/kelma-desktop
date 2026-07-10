@@ -542,11 +542,12 @@ class NoteDiffDialog(QDialog):
         if not self._confirm_action("Accept server", preview, "local"):
             return
         inspect.accept_server_note(mw.col, nid, server, deck_id=self._local_did)
-        new_nid = nid or self._find_created_note(server)
-        if new_nid:
-            self._local_note = inspect.local_note_detail(mw.col, new_nid, server.get("guid", ""))
-        tooltip("Local note updated to match server. Sync to propagate.")
-        self._populate()
+        # Updating the note bumps its mod, so a full dual_sync now carries the
+        # accepted version to BOTH Kelma and AnkiWeb (AnkiWeb only speaks the
+        # wire protocol — there's no direct write endpoint).
+        tooltip("Local note updated to match server. Syncing to AnkiWeb…")
+        self.accept()
+        engine.dual_sync()
 
     def _find_created_note(self, server_note: dict) -> int:
         """Find a note just created by accept_server (by guid)."""
@@ -557,10 +558,16 @@ class NoteDiffDialog(QDialog):
         return int(row[0]) if row else 0
 
     def _push_to_server(self) -> None:
-        """Write the local note directly to the server ("force local → server").
+        """Force the local note onto every sync target ("force local → server").
 
-        Uses the Kelma-native ``PUT /sync/notes/:guid`` endpoint, which updates
-        (or creates) the note on the server and bumps its USN — no full sync.
+        Two steps, because Kelma and AnkiWeb are different beasts:
+
+        1. Bump the local note's mod so the stock sync protocol treats it as
+           changed — this is what carries the note to **AnkiWeb**, which only
+           speaks the wire protocol (no direct write endpoint).
+        2. Direct ``PUT /sync/notes/:guid`` to the **Kelma** server for an
+           immediate, visible fix, then run the full ``dual_sync`` so both
+           services converge on the local copy.
         """
         local = self._local_note or {}
         if not local:
@@ -576,7 +583,10 @@ class NoteDiffDialog(QDialog):
         preview = inspect.preview_push_local(local, self._server_note)
         if not self._confirm_action("Force local → server", preview, "server"):
             return
-        # Re-read the freshest local note (fields/tags/cards) to push.
+        # Step 1: bump local mod so the note is "changed" for BOTH protocols
+        # (this is what reaches AnkiWeb).
+        inspect.push_local_note(mw.col, nid)
+        # Re-read the freshest local note (post-bump) to push directly to Kelma.
         payload = inspect.local_note_detail(mw.col, nid, local.get("guid", ""))
         if not payload:
             tooltip("Local note vanished.")
@@ -584,24 +594,20 @@ class NoteDiffDialog(QDialog):
         hkey = self._hkey
         endpoint = self._endpoint
         self.push_btn.setEnabled(False)
-        self.status.setText("Pushing note to server…")
+        self.status.setText("Pushing note and syncing to AnkiWeb…")
 
         def _done(future: Future) -> None:
             try:
-                outcome = future.result()
+                future.result()
             except Exception as err:
-                self.status.setText(f"Push failed: {err}")
-                self.push_btn.setEnabled(True)
-                return
-            action = outcome.get("action", "updated")
-            tooltip(f"Server note {action}. It now matches your local copy.")
-            # The server note now equals local; refresh the diff.
-            self._server_nid = int(outcome.get("nid", self._server_nid))
-            self._server_note = inspect.fetch_server_note(
-                hkey, endpoint, self._server_nid, payload.get("guid", "")
-            )
-            self.push_btn.setEnabled(True)
-            self._populate()
+                # The direct Kelma PUT failed, but the local mod bump stands —
+                # a dual_sync will still carry the note to both services.
+                self.status.setText(f"Direct push failed ({err}); syncing anyway…")
+            # Close the dialog and run the FULL dual sync so the change lands on
+            # both Kelma and AnkiWeb via the wire protocol.
+            tooltip("Forced local note to server. Syncing to AnkiWeb…")
+            self.accept()
+            engine.dual_sync()
 
         mw.taskman.run_in_background(
             lambda: inspect.write_server_note(hkey, endpoint, payload),
