@@ -1837,12 +1837,26 @@ class V2FullDiffDialog(QDialog):
         self.status_label.setText(
             f"{total} total · {len(changed)} changed  —  select rows, then Accept/Force (or use all)"
         )
-        self.table.setRowCount(len(changed))
-        for i, entry in enumerate(changed):
-            self.table.setItem(i, 0, QTableWidgetItem(entry.key[:60]))
-            self.table.setItem(i, 1, QTableWidgetItem(entry.status))
-            self.table.setItem(i, 2, QTableWidgetItem(_diff_local_preview(entry)))
-            self.table.setItem(i, 3, QTableWidgetItem(_diff_server_preview(entry)))
+        # Cap rendered rows so a huge diff (e.g. thousands of local-only cards)
+        # doesn't freeze Qt. The batch actions still operate on all changed.
+        cap = 2000
+        shown = changed[:cap]
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
+        try:
+            self.table.setRowCount(len(shown))
+            for i, entry in enumerate(shown):
+                self.table.setItem(i, 0, QTableWidgetItem(entry.key[:60]))
+                self.table.setItem(i, 1, QTableWidgetItem(entry.status))
+                self.table.setItem(i, 2, QTableWidgetItem(_diff_local_preview(entry)))
+                self.table.setItem(i, 3, QTableWidgetItem(_diff_server_preview(entry)))
+        finally:
+            self.table.setUpdatesEnabled(True)
+        if len(changed) > cap:
+            self.status_label.setText(
+                f"{total} total · {len(changed)} changed (showing first {cap}) — "
+                f"use Accept/Force all to resolve everything"
+            )
 
     def _selected_entries(self) -> list:
         rows = {idx.row() for idx in self.table.selectedIndexes()}
@@ -2122,7 +2136,7 @@ def _v2_sync_menu() -> None:
     if chosen is act_sync:
         _v2_test_sync_notes()
     elif chosen is act_compare:
-        V2CompareDialog(mw).exec()
+        V2FullDiffDialog(mw).exec()
     elif chosen is act_settings:
         V2SettingsDialog(mw).exec()
     elif chosen is act_forget:
