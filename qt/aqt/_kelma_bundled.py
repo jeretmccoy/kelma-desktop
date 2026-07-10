@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import shutil
 
-BUNDLED_VERSION = "1.0.39"
+BUNDLED_VERSION = "1.0.40"
 ADDON = "kelma"
 _MARKER = ".kelma_bundled_version"
 

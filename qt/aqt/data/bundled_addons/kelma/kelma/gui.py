@@ -27,6 +27,7 @@ from aqt.qt import (
     QLineEdit,
     QMenu,
     QPushButton,
+    pyqtSignal,
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
@@ -1707,18 +1708,19 @@ class V2NoteConflictDialog(QDialog):
 
 
 class V2FullDiffDialog(QDialog):
-    """Full server-vs-local compare with per-item and batch resolution.
+    """Full server-vs-local compare with per-item and batch resolution."""
 
-    Fetches the server manifest, diffs every resource type, and lets the user:
-      - Accept server for individual items or all changed
-      - Force local for individual items or all changed
-    """
+    # Cross-thread progress: emitted from worker threads, delivered on the main
+    # thread (Qt queues signals across threads). This is bulletproof even while
+    # the dialog runs its own modal exec loop.
+    _progress = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("KelmaSync compare")
         self.resize(1000, 640)
         self._client = None
+        self._progress.connect(self._on_progress)
 
         layout = QVBoxLayout(self)
         top_row = QHBoxLayout()
@@ -1757,53 +1759,77 @@ class V2FullDiffDialog(QDialog):
         self._diff = None
         self._load()
 
+    def _on_progress(self, text: str) -> None:
+        """Slot: update the status label on the main thread."""
+        self.status_label.setText(text)
+
     def _load(self) -> None:
-        client = _v2_client_or_login()
+        try:
+            self.status_label.setText("Connecting…")
+            client = _v2_client_or_login()
+        except Exception as err:  # noqa: BLE001
+            self.status_label.setText(f"Login error: {err}")
+            return
         if client is None:
-            self.status_label.setText("Not logged in.")
+            self.status_label.setText("Not logged in. Use the sync menu → Settings to log in.")
             return
         self._client = client
+        self.status_label.setText("Starting compare…")
 
-        # Anki's native progress dialog: a spinner that always animates (even
-        # while waiting on the collection lock) plus a per-phase label. This is
-        # the single source of "is it working" feedback.
-        mw.progress.start(label="KelmaSync: starting compare…", immediate=True)
-
-        def set_progress(text: str) -> None:
-            mw.taskman.run_on_main(lambda: mw.progress.update(label=text))
+        emit = self._progress.emit  # thread-safe cross-thread label updates
 
         def work():
-            # Everything runs in one worker thread so progress is linear and the
-            # UI never blocks. The collection is only read.
-            set_progress("Fetching server state…")
-            server = client.manifest()
-            set_progress(
-                f"Server: {len(server.get('notes', []))} notes, "
-                f"{len(server.get('cards', []))} cards · reading local collection…"
-            )
+            import time as _t
+            # --- server manifest ---
+            emit("Contacting server…")
+            t0 = _t.time()
+            try:
+                server = client.manifest()
+            except Exception as err:  # noqa: BLE001
+                raise RuntimeError(f"server fetch failed: {err}") from err
+            sn = len(server.get("notes", []))
+            sc = len(server.get("cards", []))
+            snt = len(server.get("notetypes", []))
+            sd = len(server.get("decks", []))
+            emit(f"Server: {sn} notes, {sc} cards, {snt} notetypes, {sd} decks ({_t.time()-t0:.1f}s)")
 
+            # --- local manifest (detailed per-phase via callback) ---
             from kelma_sync_v2 import anki_local
-            local = anki_local.local_manifest(mw.col, progress=set_progress)
+            try:
+                local = anki_local.local_manifest(mw.col, progress=emit)
+            except Exception as err:  # noqa: BLE001
+                raise RuntimeError(f"reading local collection failed: {err}") from err
+            ln = len(local.get("notes", []))
+            lc = len(local.get("cards", []))
+            emit(f"Local: {ln} notes, {lc} cards · comparing…")
 
-            set_progress("Comparing…")
+            # --- diff each resource with its own progress line ---
             from kelma_sync_v2.full_diff import _diff_keyed
-            diff = type("FullDiff", (), {
-                "notes": _diff_keyed(local.get("notes", []), server.get("notes", []), "guid"),
-                "cards": _diff_keyed(local.get("cards", []), server.get("cards", []), "card_id"),
-                "notetypes": _diff_keyed(local.get("notetypes", []), server.get("notetypes", []), "notetype_id"),
-                "decks": _diff_keyed(local.get("decks", []), server.get("decks", []), "name"),
+            emit("Comparing notes…")
+            notes = _diff_keyed(local.get("notes", []), server.get("notes", []), "guid")
+            emit("Comparing cards…")
+            cards = _diff_keyed(local.get("cards", []), server.get("cards", []), "card_id")
+            emit("Comparing notetypes…")
+            notetypes = _diff_keyed(local.get("notetypes", []), server.get("notetypes", []), "notetype_id")
+            emit("Comparing decks…")
+            decks = _diff_keyed(local.get("decks", []), server.get("decks", []), "name")
+            emit("Building table…")
+            return type("FullDiff", (), {
+                "notes": notes, "cards": cards, "notetypes": notetypes, "decks": decks,
                 "server_time": server.get("server_time", ""),
             })()
-            return diff
 
         def done(future: Future) -> None:
-            mw.progress.finish()
             try:
                 self._diff = future.result()
             except Exception as err:  # noqa: BLE001
-                self.status_label.setText(f"Compare failed: {err}")
+                self.status_label.setText(f"⚠ Compare failed: {err}")
+                tooltip(f"KelmaSync compare failed: {err}")
                 return
-            self._populate()
+            try:
+                self._populate()
+            except Exception as err:  # noqa: BLE001
+                self.status_label.setText(f"⚠ Failed to render: {err}")
 
         mw.taskman.run_in_background(work, done, uses_collection=True)
 
