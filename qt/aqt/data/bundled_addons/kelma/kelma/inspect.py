@@ -101,6 +101,50 @@ def fetch_server_note(hkey: str, endpoint: str, nid: int, guid: str = "") -> Opt
         raise RuntimeError(f"could not reach {endpoint}: {err.reason}") from err
 
 
+def write_server_note(hkey: str, endpoint: str, note: dict) -> dict:
+    """PUT ``/sync/notes/:guid`` — push a local note to become the server's
+    copy ("force local → server").
+
+    ``note`` must carry ``guid``, ``mid``, ``mod``, ``flds``, ``tags`` and a
+    ``cards`` list of ``{ord, did}``. The server updates (or creates) the note
+    and bumps its USN so the next Anki sync sees the change. Returns the
+    server's outcome (action + new usn). Runs in a worker thread.
+    """
+    endpoint = endpoint.rstrip("/")
+    import urllib.parse
+    guid = note.get("guid", "")
+    url = f"{endpoint}/sync/notes/{urllib.parse.quote(guid, safe='')}"
+    header = json.dumps({"v": 11, "k": hkey, "c": "kelma-plugin", "s": ""})
+    body = json.dumps({
+        "guid": guid,
+        "mid": int(note.get("mid", 0)),
+        "mod": int(note.get("mod", 0)),
+        "flds": note.get("flds", ""),
+        "tags": note.get("tags", ""),
+        "cards": [
+            {"ord": int(c.get("ord", 0)), "did": int(c.get("did", 0))}
+            for c in note.get("cards", [])
+        ],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "anki-sync": header,
+            "User-Agent": "Anki (Kelma plugin)",
+            "Content-Type": "application/json",
+        },
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as err:
+        raise RuntimeError(f"server returned HTTP {err.code}") from err
+    except urllib.error.URLError as err:
+        raise RuntimeError(f"could not reach {endpoint}: {err.reason}") from err
+
+
 def local_note_detail(col: Collection, nid: int, guid: str = "") -> Optional[dict]:
     """Full field content for one local note. Mirrors the server's
     ``NoteDetail`` shape (including the per-card list) so the diff dialog can

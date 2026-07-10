@@ -557,7 +557,11 @@ class NoteDiffDialog(QDialog):
         return int(row[0]) if row else 0
 
     def _push_to_server(self) -> None:
-        """Bump the local note's mod so it's newer, then sync to push it to server."""
+        """Write the local note directly to the server ("force local → server").
+
+        Uses the Kelma-native ``PUT /sync/notes/:guid`` endpoint, which updates
+        (or creates) the note on the server and bumps its USN — no full sync.
+        """
         local = self._local_note or {}
         if not local:
             tooltip("No local note to push.")
@@ -572,10 +576,38 @@ class NoteDiffDialog(QDialog):
         preview = inspect.preview_push_local(local, self._server_note)
         if not self._confirm_action("Force local → server", preview, "server"):
             return
-        inspect.push_local_note(mw.col, nid)
-        tooltip("Note marked newer. Syncing to push to server…")
-        self.accept()
-        engine.dual_sync(only=consts.KELMA)
+        # Re-read the freshest local note (fields/tags/cards) to push.
+        payload = inspect.local_note_detail(mw.col, nid, local.get("guid", ""))
+        if not payload:
+            tooltip("Local note vanished.")
+            return
+        hkey = self._hkey
+        endpoint = self._endpoint
+        self.push_btn.setEnabled(False)
+        self.status.setText("Pushing note to server…")
+
+        def _done(future: Future) -> None:
+            try:
+                outcome = future.result()
+            except Exception as err:
+                self.status.setText(f"Push failed: {err}")
+                self.push_btn.setEnabled(True)
+                return
+            action = outcome.get("action", "updated")
+            tooltip(f"Server note {action}. It now matches your local copy.")
+            # The server note now equals local; refresh the diff.
+            self._server_nid = int(outcome.get("nid", self._server_nid))
+            self._server_note = inspect.fetch_server_note(
+                hkey, endpoint, self._server_nid, payload.get("guid", "")
+            )
+            self.push_btn.setEnabled(True)
+            self._populate()
+
+        mw.taskman.run_in_background(
+            lambda: inspect.write_server_note(hkey, endpoint, payload),
+            _done,
+            uses_collection=False,
+        )
 
     def _confirm_action(self, action: str, preview: dict, target: str) -> bool:
         """Show a confirmation dialog with what will change. Returns True if confirmed."""
