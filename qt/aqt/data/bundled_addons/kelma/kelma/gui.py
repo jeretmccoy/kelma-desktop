@@ -1764,19 +1764,43 @@ class V2FullDiffDialog(QDialog):
             return
         self._client = client
 
-        def work():
-            from kelma_sync_v2.full_diff import build_full_diff
-            return build_full_diff(mw.col, client)
+        # Step 1: fetch server manifest in background (no collection lock needed)
+        def fetch_server():
+            return client.manifest()
 
-        def done(future: Future) -> None:
+        def on_server(future: Future) -> None:
             try:
-                self._diff = future.result()
+                server = future.result()
             except Exception as err:  # noqa: BLE001
                 self.status_label.setText(f"Compare failed: {err}")
                 return
-            self._populate()
+            # Step 2: build local manifest in background (collection access)
+            def fetch_local():
+                from kelma_sync_v2 import anki_local
+                return anki_local.local_manifest(mw.col)
 
-        mw.taskman.run_in_background(work, done, uses_collection=True)
+            def on_local(fut: Future) -> None:
+                try:
+                    local = fut.result()
+                except Exception as err:  # noqa: BLE001
+                    self.status_label.setText(f"Local manifest failed: {err}")
+                    return
+                # Step 3: compute diff on main thread (fast, no I/O)
+                from kelma_sync_v2.full_diff import _diff_keyed
+                self._diff = type(
+                    "FullDiff", (), {
+                        "notes": _diff_keyed(local.get("notes", []), server.get("notes", []), "guid"),
+                        "cards": _diff_keyed(local.get("cards", []), server.get("cards", []), "card_id"),
+                        "notetypes": _diff_keyed(local.get("notetypes", []), server.get("notetypes", []), "notetype_id"),
+                        "decks": _diff_keyed(local.get("decks", []), server.get("decks", []), "name"),
+                        "server_time": server.get("server_time", ""),
+                    }
+                )()
+                self._populate()
+
+            mw.taskman.run_in_background(fetch_local, on_local, uses_collection=True)
+
+        mw.taskman.run_in_background(fetch_server, on_server, uses_collection=False)
 
     def _resource_key(self) -> str:
         return {0: "notes", 1: "notetypes", 2: "decks", 3: "cards"}.get(
