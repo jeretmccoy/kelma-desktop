@@ -511,13 +511,18 @@ class ConflictDialog(QDialog):
         self._server = server
         self._hkey = hkey
         self._endpoint = endpoint
-        self.table = QTableWidget(0, 4)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search server/local notes, GUIDs, status, card counts…")
+        self.search.textChanged.connect(self._populate)
+        outer.addWidget(self.search)
+
+        self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
-            ["Note preview", "Difference", "Local modified", "Server modified"]
+            ["Note preview", "Difference", "Cards L/S", "Local modified", "Server modified"]
         )
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for col in (1, 2, 3):
+        for col in (1, 2, 3, 4):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -540,11 +545,36 @@ class ConflictDialog(QDialog):
         outer.addWidget(buttons)
         self._populate()
 
+    def _card_count_text(self, diff: dict) -> str:
+        local_did = int((self._deck_diff.get("local") or {}).get("id", 0))
+        server_did = int((self._deck_diff.get("server") or {}).get("id", 0))
+        lc = _card_count_in_deck(diff.get("local"), local_did)
+        sc = _card_count_in_deck(diff.get("server"), server_did)
+        return f"{lc} / {sc}"
+
+    def _row_search_text(self, diff: dict) -> str:
+        return " ".join(
+            str(part)
+            for part in (
+                diff.get("preview", ""),
+                diff.get("guid", ""),
+                diff.get("status", ""),
+                _DIFF_LABEL.get(diff.get("status", ""), diff.get("status", "")),
+                self._card_count_text(diff),
+                (diff.get("local") or {}).get("nid", ""),
+                (diff.get("server") or {}).get("nid", ""),
+            )
+        ).lower()
+
     def _populate(self, _checked: bool = False) -> None:
-        rows = [
-            diff for diff in self._note_diffs
-            if self.show_matching.isChecked() or diff["status"] != "in-sync"
-        ]
+        query = self.search.text().strip().lower()
+        rows = []
+        for diff in self._note_diffs:
+            if not query and not self.show_matching.isChecked() and diff["status"] == "in-sync":
+                continue
+            if query and query not in self._row_search_text(diff):
+                continue
+            rows.append(diff)
         self.table.setRowCount(len(rows))
         for row, diff in enumerate(rows):
             preview = QTableWidgetItem(diff["preview"])
@@ -555,8 +585,11 @@ class ConflictDialog(QDialog):
             server_hash = (diff.get("server") or {}).get("hash", "—")
             status.setToolTip(f"Local: {local_hash}\nServer: {server_hash}")
             self.table.setItem(row, 1, status)
-            self.table.setItem(row, 2, QTableWidgetItem(_format_note_mod(diff.get("local"))))
-            self.table.setItem(row, 3, QTableWidgetItem(_format_note_mod(diff.get("server"))))
+            cards = QTableWidgetItem(self._card_count_text(diff))
+            cards.setToolTip("Cards in this deck: local / server")
+            self.table.setItem(row, 2, cards)
+            self.table.setItem(row, 3, QTableWidgetItem(_format_note_mod(diff.get("local"))))
+            self.table.setItem(row, 4, QTableWidgetItem(_format_note_mod(diff.get("server"))))
 
         counts = Counter(diff["status"] for diff in self._note_diffs)
         changed = len(self._note_diffs) - counts["in-sync"]
@@ -573,14 +606,16 @@ class ConflictDialog(QDialog):
         self.summary.setText(
             f"{changed} differing note(s): {detail}. "
             f"Showing {len(rows)} of {len(self._note_diffs)} notes. "
-            "Double-click a row to see the field-by-field diff."
+            "Search filters all visible server/local rows. Double-click a row to see fields and cards."
         )
 
     def _note_clicked(self, row: int, _col: int) -> None:
         """Open a field-by-field diff dialog for the double-clicked note."""
+        query = self.search.text().strip().lower()
         rows = [
             diff for diff in self._note_diffs
-            if self.show_matching.isChecked() or diff["status"] != "in-sync"
+            if (query or self.show_matching.isChecked() or diff["status"] != "in-sync")
+            and (not query or query in self._row_search_text(diff))
         ]
         if row >= len(rows):
             return
