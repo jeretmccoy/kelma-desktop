@@ -1880,18 +1880,24 @@ def _diff_local_preview(entry) -> str:
     l = entry.local
     if l is None:
         return "(missing)"
-    if "checksum" in l:
-        return l.get("modified_at", "")
-    return l.get("modified_at", str(l)[:80])
+    return _entry_preview(l)
 
 
 def _diff_server_preview(entry) -> str:
     s = entry.server
     if s is None:
         return "(missing)"
-    if "checksum" in s:
-        return s.get("modified_at", "")
-    return s.get("modified_at", str(s)[:80])
+    return _entry_preview(s)
+
+
+def _entry_preview(record: dict) -> str:
+    """Short preview of a manifest entry's content."""
+    if "guid" in record or "checksum" in record and "modified_at" in record and len(record) <= 4:
+        # Manifest entry: show timestamp + checksum suffix
+        ts = record.get("modified_at", "")
+        cs = record.get("checksum", "")[:8]
+        return f"{ts} · {cs}" if cs else str(ts)
+    return str(record)[:120]
 
 
 class V2SettingsDialog(QDialog):
