@@ -1924,8 +1924,10 @@ def _v2_test_sync_notes() -> None:
         cfg2["v2_last_server_time"] = result.server_time
         config.save(cfg2)
         tooltip(
-            f"KelmaSync: notetypes pushed {result.notetypes.pushed}, pulled {result.notetypes.pulled}; "
-            f"notes pushed {result.notes.pushed}, pulled {result.notes.pulled}, skipped {result.notes.skipped}."
+            f"KelmaSync: decks {result.decks.pushed}/{result.decks.pulled}, "
+            f"notetypes {result.notetypes.pushed}/{result.notetypes.pulled}, "
+            f"notes {result.notes.pushed}/{result.notes.pulled}, "
+            f"cards {result.cards.pushed}/{result.cards.pulled}."
         )
 
     mw.taskman.run_in_background(_work, _done, uses_collection=True)
