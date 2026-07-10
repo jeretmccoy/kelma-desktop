@@ -1854,12 +1854,14 @@ def _v2_sync_menu() -> None:
     endpoint = cfg.get("v2_url") or "http://localhost:8081"
     user = cfg.get("v2_username") or "(no username saved)"
     status_label = QLabel(
-        f"<div style='padding-left:14px; padding-right:14px;'>"
         f"<b>{status}</b> · {user}<br>"
         f"<span style='color:#888'>{endpoint}</span>"
-        f"</div>"
     )
-    box.addWidget(status_label)
+    status_wrap = QWidget()
+    status_layout = QHBoxLayout(status_wrap)
+    status_layout.setContentsMargins(18, 0, 18, 0)
+    status_layout.addWidget(status_label)
+    box.addWidget(status_wrap)
     wa = QWidgetAction(menu)
     wa.setDefaultWidget(container)
     menu.addAction(wa)
