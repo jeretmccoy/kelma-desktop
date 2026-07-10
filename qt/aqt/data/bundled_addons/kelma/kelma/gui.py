@@ -1556,7 +1556,7 @@ def _wrapped_sync() -> None:
         if _orig_sync:
             return _orig_sync()
         return
-    _v2_test_sync_notes()
+    _v2_sync_menu()
 
 
 def _install_sync_hook() -> None:
@@ -1830,6 +1830,50 @@ def _v2_preview(record: dict) -> str:
     if "client_modified_at" in record:
         return str(record.get("client_modified_at"))
     return str(record)[:160]
+
+
+def _v2_sync_menu() -> None:
+    """V2 popup shown from the Anki Sync button.
+
+    This restores the old interaction pattern (click Sync → Kelma menu appears)
+    while keeping all actions on the v2 path.
+    """
+    cfg = config.get()
+    menu = QMenu(mw)
+    if branding.logo_enabled():
+        menu.setIcon(branding.star_icon())
+
+    container = QWidget()
+    box = QVBoxLayout(container)
+    box.setContentsMargins(0, 8, 0, 4)
+    box.setSpacing(4)
+    box.addWidget(_brand_header("KelmaSync v2"))
+    status = "logged in" if cfg.get("v2_token") else "not logged in"
+    endpoint = cfg.get("v2_url") or "http://localhost:8081"
+    user = cfg.get("v2_username") or "(no username saved)"
+    box.addWidget(QLabel(f"<b>{status}</b> · {user}<br><span style='color:#888'>{endpoint}</span>"))
+    wa = QWidgetAction(menu)
+    wa.setDefaultWidget(container)
+    menu.addAction(wa)
+    menu.addSeparator()
+
+    act_sync = menu.addAction("V2 sync notes")
+    act_compare = menu.addAction("V2 compare notes…")
+    menu.addSeparator()
+    act_settings = menu.addAction("V2 settings…")
+    act_forget = menu.addAction("V2 forget login")
+
+    chosen = menu.exec(QCursor.pos())
+    if chosen is None:
+        return
+    if chosen is act_sync:
+        _v2_test_sync_notes()
+    elif chosen is act_compare:
+        V2CompareDialog(mw).exec()
+    elif chosen is act_settings:
+        V2SettingsDialog(mw).exec()
+    elif chosen is act_forget:
+        _v2_forget_login()
 
 
 def _v2_test_sync_notes() -> None:
