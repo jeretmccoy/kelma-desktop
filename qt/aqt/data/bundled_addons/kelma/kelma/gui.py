@@ -509,11 +509,12 @@ class NoteDiffDialog(QDialog):
             f"GUID: {self._guid}  ·  status: {self._diff.get('status', '—')}"
         )
 
-        # Enable resolution buttons now that both sides are loaded.
+        # Enable resolution buttons — always enabled so the user can try;
+        # the click handlers explain what's missing.
         if hasattr(self, "accept_btn"):
-            self.accept_btn.setEnabled(bool(self._local_note) and bool(self._server_note))
+            self.accept_btn.setEnabled(True)
         if hasattr(self, "push_btn"):
-            self.push_btn.setEnabled(bool(self._local_note))
+            self.push_btn.setEnabled(True)
 
     def _generate_guid(self) -> None:
         """Assign a unique GUID to the local note, fixing the root cause of
@@ -533,13 +534,15 @@ class NoteDiffDialog(QDialog):
         """Update the local note to match the server's fields, tags, and cards."""
         local = self._local_note or {}
         server = self._server_note
-        if not local or not server:
+        if not server:
+            tooltip("No server note to accept.")
             return
         nid = int(local.get("nid", 0))
         if not nid:
-            tooltip("No local note to update.")
+            # Note doesn't exist locally — can't accept into nothing.
+            tooltip("This note doesn't exist locally. Sync to download it from the server.")
             return
-        preview = inspect.preview_accept_server(local, server)
+        preview = inspect.preview_accept_server(local if local else None, server)
         if not self._confirm_action("Accept server", preview, "local"):
             return
         inspect.accept_server_note(mw.col, nid, server)
