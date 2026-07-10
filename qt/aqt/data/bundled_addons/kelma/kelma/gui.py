@@ -23,6 +23,7 @@ from aqt.qt import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QInputDialog,
     QLineEdit,
     QMenu,
     QPushButton,
@@ -1595,6 +1596,91 @@ def _install_native_sync_guard() -> None:
 
 
 # -----------------------------------------------------------------------------
+# KelmaSync v2 experimental note-only sync
+# -----------------------------------------------------------------------------
+def _v2_client_or_login():
+    """Return a V2Client, prompting for v2 credentials if needed."""
+    try:
+        from kelma_sync_v2.client import V2Client
+    except Exception as err:  # noqa: BLE001
+        tooltip(f"KelmaSync v2 client package is not installed: {err}")
+        return None
+
+    cfg = config.get()
+    endpoint = cfg.get("v2_url") or "http://localhost:8081"
+    token = cfg.get("v2_token") or ""
+    client = V2Client(endpoint, token=token)
+    if token:
+        return client
+
+    username, ok = QInputDialog.getText(mw, "KelmaSync v2 login", "Username:", text=cfg.get("v2_username", ""))
+    if not ok or not username:
+        return None
+    password, ok = QInputDialog.getText(mw, "KelmaSync v2 login", "Password:", QLineEdit.EchoMode.Password)
+    if not ok or not password:
+        return None
+    label, ok = QInputDialog.getText(mw, "KelmaSync v2 login", "Client label:", text=cfg.get("v2_client_label", "Anki plugin"))
+    if not ok or not label:
+        return None
+
+    try:
+        auth_out = client.login(username, password, label)
+    except Exception as err:  # noqa: BLE001
+        tooltip(f"KelmaSync v2 login failed: {err}")
+        return None
+    cfg["v2_url"] = endpoint
+    cfg["v2_username"] = username
+    cfg["v2_token"] = auth_out.token
+    cfg["v2_client_id"] = auth_out.client_id
+    cfg["v2_client_label"] = label
+    config.save(cfg)
+    tooltip("KelmaSync v2 login saved.")
+    return client
+
+
+def _v2_test_sync_notes() -> None:
+    """Experimental note-only v2 sync entrypoint.
+
+    This is intentionally separate from existing v1 sync. It syncs notes only,
+    reports counts, and stores v2_last_server_time only after a clean pass.
+    """
+    client = _v2_client_or_login()
+    if client is None:
+        return
+    try:
+        from kelma_sync_v2.note_sync import NoteSyncConflict, sync_notes_once
+    except Exception as err:  # noqa: BLE001
+        tooltip(f"KelmaSync v2 package import failed: {err}")
+        return
+
+    cfg = config.get()
+    since = cfg.get("v2_last_server_time") or None
+    tooltip("KelmaSync v2: syncing notes…")
+
+    def _work():
+        return sync_notes_once(mw.col, client, since=since, apply_pulls=True)
+
+    def _done(future: Future) -> None:
+        try:
+            result = future.result()
+        except NoteSyncConflict as conflict:
+            tooltip(f"KelmaSync v2: {len(conflict.conflicts)} note conflict(s). No checkpoint saved.")
+            return
+        except Exception as err:  # noqa: BLE001
+            tooltip(f"KelmaSync v2 sync failed: {err}")
+            return
+        cfg2 = config.get()
+        cfg2["v2_last_server_time"] = result.server_time
+        config.save(cfg2)
+        tooltip(
+            f"KelmaSync v2 notes: pushed {result.pushed}, pulled {result.pulled}, "
+            f"skipped {result.skipped}."
+        )
+
+    mw.taskman.run_in_background(_work, _done, uses_collection=True)
+
+
+# -----------------------------------------------------------------------------
 # Menu
 # -----------------------------------------------------------------------------
 def _build_menu() -> None:
@@ -1631,6 +1717,11 @@ def _build_menu() -> None:
     act_diag = QAction("Sync diagnostics…", mw)
     act_diag.triggered.connect(_open_diagnostics)
     menu.addAction(act_diag)
+
+    menu.addSeparator()
+    act_v2 = QAction("V2 test sync notes…", mw)
+    act_v2.triggered.connect(_v2_test_sync_notes)
+    menu.addAction(act_v2)
 
     _build_display_menu(menu)
 

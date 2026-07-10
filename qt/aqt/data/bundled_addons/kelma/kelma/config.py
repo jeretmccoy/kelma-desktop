@@ -37,6 +37,14 @@ def get() -> dict[str, Any]:
     # routing column). Off by default — the standalone plugin is dual-sync; the
     # KelmaDesktop bundle turns this on so the app never references AnkiWeb.
     cfg.setdefault("kelmasync_only", False)
+    # KelmaSync v2 experimental REST client config. Kept separate from v1 hkey
+    # auth so the existing sync path remains untouched.
+    cfg.setdefault("v2_url", "http://localhost:8081")
+    cfg.setdefault("v2_username", "")
+    cfg.setdefault("v2_token", "")
+    cfg.setdefault("v2_client_id", "")
+    cfg.setdefault("v2_client_label", "Anki plugin")
+    cfg.setdefault("v2_last_server_time", "")
     return cfg
 
 
