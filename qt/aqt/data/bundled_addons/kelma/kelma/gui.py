@@ -1599,11 +1599,11 @@ def _install_native_sync_guard() -> None:
 # KelmaSync v2 experimental note-only sync
 # -----------------------------------------------------------------------------
 def _v2_client_or_login():
-    """Return a V2Client, prompting for v2 credentials if needed."""
+    """Return a V2Client, prompting for credentials if no token is saved."""
     try:
         from kelma_sync_v2.client import V2Client
     except Exception as err:  # noqa: BLE001
-        tooltip(f"KelmaSync v2 client package is not installed: {err}")
+        tooltip(f"KelmaSync client package is not installed: {err}")
         return None
 
     cfg = config.get()
@@ -1634,7 +1634,7 @@ def _v2_client_or_login():
     cfg["v2_client_id"] = auth_out.client_id
     cfg["v2_client_label"] = label
     config.save(cfg)
-    tooltip("KelmaSync v2 login saved.")
+    tooltip("KelmaSync login saved.")
     return client
 
 
