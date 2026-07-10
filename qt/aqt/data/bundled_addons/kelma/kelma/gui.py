@@ -227,6 +227,30 @@ class NoteDiffDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
+
+        # Per-note resolution actions.
+        if not self._guid:
+            self.gen_guid_btn = buttons.addButton(
+                "Generate GUID", QDialogButtonBox.ButtonRole.ActionRole
+            )
+            self.gen_guid_btn.setToolTip(
+                "This note has an empty GUID, which causes sync/inspect ambiguity. "
+                "Generate a unique GUID to fix the root cause."
+            )
+            self.gen_guid_btn.clicked.connect(self._generate_guid)
+
+        self.accept_btn = buttons.addButton(
+            "Accept server", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        self.accept_btn.setEnabled(False)
+        self.accept_btn.clicked.connect(self._accept_server)
+
+        self.push_btn = buttons.addButton(
+            "Push to server", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        self.push_btn.setEnabled(False)
+        self.push_btn.clicked.connect(self._push_to_server)
+
         outer.addWidget(buttons)
 
         if self._server_manifest:
@@ -484,6 +508,84 @@ class NoteDiffDialog(QDialog):
         self.status.setText(
             f"GUID: {self._guid}  ·  status: {self._diff.get('status', '—')}"
         )
+
+        # Enable resolution buttons now that both sides are loaded.
+        if hasattr(self, "accept_btn"):
+            self.accept_btn.setEnabled(bool(self._local_note) and bool(self._server_note))
+        if hasattr(self, "push_btn"):
+            self.push_btn.setEnabled(bool(self._local_note))
+
+    def _generate_guid(self) -> None:
+        """Assign a unique GUID to the local note, fixing the root cause of
+        empty-GUID ambiguity."""
+        local_nid = int((self._local_note or {}).get("nid", 0))
+        if not local_nid:
+            tooltip("No local note to update.")
+            return
+        new_guid = inspect.generate_guid(mw.col, local_nid)
+        tooltip(f"Generated GUID: {new_guid}")
+        self._guid = new_guid
+        self.setWindowTitle(f"Note diff — {new_guid[:12]}…")
+        self._local_note = inspect.local_note_detail(mw.col, local_nid, new_guid)
+        self._populate()
+
+    def _accept_server(self) -> None:
+        """Update the local note to match the server's fields, tags, and cards."""
+        local = self._local_note or {}
+        server = self._server_note
+        if not local or not server:
+            return
+        nid = int(local.get("nid", 0))
+        if not nid:
+            tooltip("No local note to update.")
+            return
+        preview = inspect.preview_accept_server(local, server)
+        if not self._confirm_action("Accept server", preview, "local"):
+            return
+        inspect.accept_server_note(mw.col, nid, server)
+        self._local_note = inspect.local_note_detail(mw.col, nid, local.get("guid", ""))
+        tooltip("Local note updated to match server. Sync to propagate.")
+        self._populate()
+
+    def _push_to_server(self) -> None:
+        """Bump the local note's mod so the next sync pushes it to the server."""
+        local = self._local_note or {}
+        if not local:
+            return
+        nid = int(local.get("nid", 0))
+        if not nid:
+            tooltip("No local note to push.")
+            return
+        if not local.get("guid"):
+            tooltip("Cannot push a note with an empty GUID — generate one first.")
+            return
+        preview = inspect.preview_push_local(local, self._server_note)
+        if not self._confirm_action("Push to server", preview, "server"):
+            return
+        inspect.push_local_note(mw.col, nid)
+        tooltip("Note marked newer. Sync to push to server.")
+
+    def _confirm_action(self, action: str, preview: dict, target: str) -> bool:
+        """Show a confirmation dialog with what will change. Returns True if confirmed."""
+        from aqt.qt import QMessageBox
+        parts = []
+        if preview["fields"]:
+            parts.append(f"  {len(preview['fields'])} field(s) will change")
+        if preview.get("tags"):
+            parts.append(f"  tags: {preview['tags']['old']!r} → {preview['tags']['new']!r}")
+        if preview["cards_added"]:
+            parts.append(f"  {len(preview['cards_added'])} card(s) will be added (ord: {preview['cards_added']})")
+        if preview["cards_deleted"]:
+            parts.append(f"  {len(preview['cards_deleted'])} card(s) will be deleted (ord: {preview['cards_deleted']})")
+        if not parts:
+            parts.append("  (no changes — sides already match)")
+        direction = "local ← server" if target == "local" else "server ← local"
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle(f"Confirm: {action}")
+        msg.setText(f"{action}: {direction}\n\nWhat will change:\n" + "\n".join(parts))
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        return msg.exec() == QMessageBox.StandardButton.Yes
 
 
 class ConflictDialog(QDialog):

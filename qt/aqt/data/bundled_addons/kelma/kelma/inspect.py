@@ -482,3 +482,118 @@ def _note_preview(flds: str) -> str:
     plain = html.unescape(re.sub(r"<[^>]*>", "", first))
     collapsed = " ".join(plain.split())
     return collapsed[:120] + ("…" if len(collapsed) > 120 else "")
+
+
+# --- Per-note resolution actions ---------------------------------------------
+
+
+def generate_guid(col: Collection, nid: int) -> str:
+    """Generate and assign a unique base91 GUID to the local note ``nid``.
+
+    Fixes the root cause of duplicate/empty-GUID problems: Anki's sync and the
+    inspect manifest match notes by GUID, and a note with ``guid=""`` can't be
+    distinguished from other empty-GUID notes. After assigning a real GUID,
+    sync, inspect, and the diff all work correctly.
+
+    Returns the new GUID.
+    """
+    from anki.utils import guid64
+    new_guid = guid64()
+    col.db.execute(
+        "UPDATE notes SET guid = ? WHERE id = ?", new_guid, nid
+    )
+    col.flush_scheduler()
+    return new_guid
+
+
+def preview_accept_server(local_note: dict | None, server_note: dict) -> dict:
+    """Preview what 'accept server' would change on the local note.
+
+    Returns a dict with ``fields`` (list of {index, old, new}), ``tags``
+    ({old, new}), ``cards_added`` (list of ords), ``cards_deleted`` (list of
+    ords), ``mod_change`` ({old, new}).
+    """
+    lf = (local_note or {}).get("flds", "").split("\x1f") if local_note else []
+    sf = (server_note or {}).get("flds", "").split("\x1f")
+    max_len = max(len(lf), len(sf))
+    lf += [""] * (max_len - len(lf))
+    sf += [""] * (max_len - len(sf))
+    fields = [
+        {"index": i, "old": lf[i], "new": sf[i]}
+        for i in range(max_len) if lf[i] != sf[i]
+    ]
+    lt = (local_note or {}).get("tags", "") if local_note else ""
+    st = (server_note or {}).get("tags", "")
+    local_cards = {int(c["ord"]) for c in (local_note or {}).get("cards", [])} if local_note else set()
+    server_cards = {int(c["ord"]) for c in (server_note or {}).get("cards", [])}
+    return {
+        "fields": fields,
+        "tags": {"old": lt, "new": st} if lt != st else None,
+        "cards_added": sorted(server_cards - local_cards),
+        "cards_deleted": sorted(local_cards - server_cards),
+        "mod_change": {
+            "old": int((local_note or {}).get("mod", 0)) if local_note else 0,
+            "new": int((server_note or {}).get("mod", 0)),
+        },
+    }
+
+def accept_server_note(col: Collection, nid: int, server_note: dict) -> dict:
+    """Update the local note to match the server's fields, tags, and mod.
+
+    Card templates (ord) that exist on the server but not locally are created
+    via Anki's note-update (which generates cards from the note type's
+    templates); extra local cards are deleted. The note's mod is set to the
+    server's mod so the next sync doesn't push the local copy back.
+    """
+    import time
+    note = col.get_note(nid)
+    note.fields = (server_note.get("flds") or "").split("\x1f")
+    note.tags = (server_note.get("tags") or "").split()
+    # Set mod to server's mod so sync sees them as equal, not local-newer.
+    note.mod = int(server_note.get("mod", 0)) or int(time.time())
+    note.flush()
+    # Regenerate cards from the note type's templates — adds missing ords,
+    # removes extra ones.
+    col.update_note(note)
+    return preview_accept_server(local_note_detail(col, nid), server_note)
+
+
+def preview_push_local(local_note: dict, server_note: dict | None) -> dict:
+    """Preview what 'push to server' would change.
+
+    Pushing to server means: make the local note newer (bump mod), then the
+    next sync pushes it. The preview shows what the server will receive.
+    """
+    lf = (local_note or {}).get("flds", "").split("\x1f")
+    sf = (server_note or {}).get("flds", "").split("\x1f") if server_note else []
+    max_len = max(len(lf), len(sf))
+    lf += [""] * (max_len - len(lf))
+    sf += [""] * (max_len - len(sf))
+    fields = [
+        {"index": i, "old": sf[i], "new": lf[i]}
+        for i in range(max_len) if lf[i] != sf[i]
+    ]
+    local_cards = {int(c["ord"]) for c in (local_note or {}).get("cards", [])}
+    server_cards = {int(c["ord"]) for c in (server_note or {}).get("cards", [])} if server_note else set()
+    return {
+        "fields": fields,
+        "tags": {
+            "old": (server_note or {}).get("tags", ""),
+            "new": (local_note or {}).get("tags", ""),
+        } if (server_note or {}).get("tags", "") != (local_note or {}).get("tags", "") else None,
+        "cards_added": sorted(local_cards - server_cards),
+        "cards_deleted": sorted(server_cards - local_cards),
+        "mod_change": {
+            "old": int((server_note or {}).get("mod", 0)) if server_note else 0,
+            "new": "(bumped to now)",
+        },
+    }
+
+
+def push_local_note(col: Collection, nid: int) -> None:
+    """Bump the local note's mod to now, so the next sync pushes it to server."""
+    import time
+    col.db.execute(
+        "UPDATE notes SET mod = ? WHERE id = ?", int(time.time()), nid
+    )
+    col.flush_scheduler()
