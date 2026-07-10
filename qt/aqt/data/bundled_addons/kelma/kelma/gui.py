@@ -1924,7 +1924,8 @@ def _v2_test_sync_notes() -> None:
         cfg2["v2_last_server_time"] = result.server_time
         config.save(cfg2)
         tooltip(
-            f"KelmaSync: decks {result.decks.pushed}/{result.decks.pulled}, "
+            f"KelmaSync: tombstones {result.tombstones.applied}, "
+            f"decks {result.decks.pushed}/{result.decks.pulled}, "
             f"notetypes {result.notetypes.pushed}/{result.notetypes.pulled}, "
             f"notes {result.notes.pushed}/{result.notes.pulled}, "
             f"cards {result.cards.pushed}/{result.cards.pulled}."
