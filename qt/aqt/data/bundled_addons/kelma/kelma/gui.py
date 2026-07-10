@@ -1613,13 +1613,13 @@ def _v2_client_or_login():
     if token:
         return client
 
-    username, ok = QInputDialog.getText(mw, "KelmaSync v2 login", "Username:", text=cfg.get("v2_username", ""))
+    username, ok = QInputDialog.getText(mw, "KelmaSync login", "Username:", text=cfg.get("v2_username", ""))
     if not ok or not username:
         return None
-    password, ok = QInputDialog.getText(mw, "KelmaSync v2 login", "Password:", QLineEdit.EchoMode.Password)
+    password, ok = QInputDialog.getText(mw, "KelmaSync login", "Password:", QLineEdit.EchoMode.Password)
     if not ok or not password:
         return None
-    label, ok = QInputDialog.getText(mw, "KelmaSync v2 login", "Client label:", text=cfg.get("v2_client_label", "Anki plugin"))
+    label, ok = QInputDialog.getText(mw, "KelmaSync login", "Client label:", text=cfg.get("v2_client_label", "Anki plugin"))
     if not ok or not label:
         return None
 
@@ -1709,7 +1709,7 @@ class V2NoteConflictDialog(QDialog):
 class V2SettingsDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("KelmaSync v2 settings")
+        self.setWindowTitle("KelmaSync settings")
         cfg = config.get()
         layout = QVBoxLayout(self)
         grid = QGridLayout()
@@ -1751,7 +1751,7 @@ class V2SettingsDialog(QDialog):
 class V2CompareDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("KelmaSync v2 compare notes")
+        self.setWindowTitle("KelmaSync compare notes")
         self.resize(900, 520)
         layout = QVBoxLayout(self)
         self.status = QLabel("Loading…")
@@ -1847,7 +1847,8 @@ def _v2_sync_menu() -> None:
     box = QVBoxLayout(container)
     box.setContentsMargins(0, 8, 0, 4)
     box.setSpacing(4)
-    box.addWidget(_brand_header("KelmaSync v2"))
+    box.addWidget(_brand_header("KelmaSync"))
+    container.setMinimumWidth(360)
     status = "logged in" if cfg.get("v2_token") else "not logged in"
     endpoint = cfg.get("v2_url") or "http://localhost:8081"
     user = cfg.get("v2_username") or "(no username saved)"
@@ -1857,11 +1858,12 @@ def _v2_sync_menu() -> None:
     menu.addAction(wa)
     menu.addSeparator()
 
-    act_sync = menu.addAction("V2 sync notes")
-    act_compare = menu.addAction("V2 compare notes…")
+    menu.setMinimumWidth(380)
+    act_sync = menu.addAction("Sync notes")
+    act_compare = menu.addAction("Compare notes…")
     menu.addSeparator()
-    act_settings = menu.addAction("V2 settings…")
-    act_forget = menu.addAction("V2 forget login")
+    act_settings = menu.addAction("Settings…")
+    act_forget = menu.addAction("Forget login")
 
     chosen = menu.exec(QCursor.pos())
     if chosen is None:
@@ -1933,21 +1935,21 @@ def _build_menu() -> None:
         menu.setIcon(branding.star_icon())
     mw.form.menuTools.addMenu(menu)
 
-    act_sync = QAction("V2 sync notes", mw)
+    act_sync = QAction("Sync notes", mw)
     act_sync.triggered.connect(_v2_test_sync_notes)
     menu.addAction(act_sync)
 
-    act_compare = QAction("V2 compare notes…", mw)
+    act_compare = QAction("Compare notes…", mw)
     act_compare.triggered.connect(lambda: V2CompareDialog(mw).exec())
     menu.addAction(act_compare)
 
     menu.addSeparator()
 
-    act_settings = QAction("V2 settings…", mw)
+    act_settings = QAction("Settings…", mw)
     act_settings.triggered.connect(lambda: V2SettingsDialog(mw).exec())
     menu.addAction(act_settings)
 
-    act_logout = QAction("V2 forget login", mw)
+    act_logout = QAction("Forget login", mw)
     act_logout.triggered.connect(_v2_forget_login)
     menu.addAction(act_logout)
 
