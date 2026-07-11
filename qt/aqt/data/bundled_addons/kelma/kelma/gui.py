@@ -1984,10 +1984,11 @@ class V2FullDiffDialog(QDialog):
         top_row.addWidget(self.resource_combo)
         top_row.addStretch()
 
-        self.btn_accept_all = QPushButton("Accept all server")
+        self.btn_accept_all = QPushButton("Use KelmaSync for all")
         self.btn_accept_all.clicked.connect(self._accept_all)
         top_row.addWidget(self.btn_accept_all)
-        self.btn_force_all = QPushButton("Force all local")
+        local_source = "Local collection" if config.kelmasync_only() else "Anki / AnkiWeb"
+        self.btn_force_all = QPushButton(f"Use {local_source} for all")
         self.btn_force_all.clicked.connect(self._force_all)
         top_row.addWidget(self.btn_force_all)
         layout.addLayout(top_row)
@@ -1996,7 +1997,7 @@ class V2FullDiffDialog(QDialog):
         layout.addWidget(self.status_label)
 
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Key", "Deck", "Status", "Local", "Server", "Actions"])
+        self.table.setHorizontalHeaderLabels(["Key", "Deck", "Status", local_source, "KelmaSync", "Actions"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -2131,7 +2132,7 @@ class V2FullDiffDialog(QDialog):
         # Accept/Force buttons.
         self._rows = changed
         self.status_label.setText(
-            f"{total} total · {len(changed)} changed  —  select rows, then Accept/Force (or use all)"
+            f"{total} total · {len(changed)} changed — select rows, then choose which source wins"
         )
         # Cap rendered rows so a huge diff (e.g. thousands of local-only cards)
         # doesn't freeze Qt. The batch actions still operate on all changed.
@@ -2153,7 +2154,7 @@ class V2FullDiffDialog(QDialog):
         if len(changed) > cap:
             self.status_label.setText(
                 f"{total} total · {len(changed)} changed (showing first {cap}) — "
-                f"use Accept/Force all to resolve everything"
+                f"use a source button above to resolve everything"
             )
 
     def _selected_entries(self) -> list:
@@ -2332,7 +2333,13 @@ def _v2_entry_detail_html(col, client, entry) -> str:
 
     kind = entry.resource
     title = f"{entry.status}: {entry.key}"
-    parts = [f"<h2>{_esc(title)}</h2>", "<p><b>Double-check before resolving:</b> Accept server overwrites local; Force local overwrites server.</p>"]
+    local_name = "Local collection" if config.kelmasync_only() else "Anki / AnkiWeb"
+    parts = [
+        f"<h2>{_esc(title)}</h2>",
+        f"<p><b>Choose the canonical source:</b> KelmaSync overwrites {local_name}; "
+        f"{local_name} overwrites KelmaSync. The reconciliation pass then publishes "
+        "the chosen local result to both services.</p>",
+    ]
 
     if kind == "guid":
         local = anki_local.note_record(col, entry.key) if entry.local else None
@@ -2674,7 +2681,13 @@ def _v2_sync_menu() -> None:
 
 
 def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
-    """Run Kelma v2 sync, optionally followed by native AnkiWeb sync."""
+    """Reconcile AnkiWeb → local ↔ KelmaSync → AnkiWeb.
+
+    AnkiWeb must run first: changes it downloads become visible to the Kelma
+    planner in this same operation. A final AnkiWeb pass publishes any Kelma
+    pulls or explicit conflict choices, making the resolved local state
+    canonical on both services.
+    """
     global _V2_ACTIVE_ACTION
     blocked = _v2_active_message()
     if blocked:
@@ -2699,8 +2712,9 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
     dlg = V2SyncProgressDialog(mw)
     dlg.show()
     if also_ankiweb:
-        dlg.progress(f"Dual sync queued: {len(deck_names)} KelmaSync deck(s) first, then AnkiWeb.")
-        tooltip("KelmaSync + AnkiWeb: syncing… progress window opened.")
+        dlg.progress(f"Reconciliation queued for {len(deck_names)} KelmaSync deck(s).")
+        dlg.progress("Order: inspect local → pull/push AnkiWeb → reconcile KelmaSync → publish AnkiWeb.")
+        tooltip("KelmaSync + AnkiWeb: reconciling sources… progress window opened.")
     else:
         dlg.progress(f"KelmaSync queued for {len(deck_names)} picked deck(s). Waiting for Anki collection worker…")
         tooltip("KelmaSync: syncing… progress window opened.")
@@ -2714,14 +2728,26 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
         try:
             result = future.result()
         except ContentSyncConflict as conflict:
-            msg = f"{len(conflict.conflicts)} {conflict.resource} conflict(s). No checkpoint saved. Opening resolver…"
+            msg = f"{len(conflict.conflicts)} {conflict.resource} conflict(s). Choose which source wins."
             if _V2_ACTIVE_ACTION == "sync":
                 _V2_ACTIVE_ACTION = None
-            dlg.complete(msg, ok=False)
+            dlg.progress(msg)
             tooltip(f"KelmaSync: {msg}")
-            # Open the full checksum diff resolver for notes/cards/decks/notetypes.
-            # It lets the user explicitly Accept server or Force local.
+            # Local now includes the initial AnkiWeb sync, so the two sides are
+            # explicitly Anki/AnkiWeb vs KelmaSync.
             V2FullDiffDialog(mw).exec()
+            if not also_ankiweb:
+                dlg.complete("Conflict choices applied. Run sync once more to verify convergence.", ok=True)
+                return
+            dlg.progress("Publishing resolved local state to AnkiWeb…")
+
+            def conflict_publish_done(ok: bool, text: str) -> None:
+                if ok:
+                    dlg.complete("Conflict choices published to AnkiWeb. Run compare to verify convergence.", ok=True)
+                else:
+                    dlg.complete(f"Conflict choices saved locally/KelmaSync, but {text}", ok=False)
+
+            _v2_run_ankiweb_sync(progress=dlg.progress, done=conflict_publish_done)
             return
         except Exception as err:  # noqa: BLE001
             if _V2_ACTIVE_ACTION == "sync":
@@ -2747,26 +2773,84 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
             tooltip(f"KelmaSync complete: {msg}")
             return
 
-        dlg.progress(f"KelmaSync complete: {msg}")
-        dlg.progress("Starting AnkiWeb sync…")
+        dlg.progress(f"KelmaSync reconciliation complete: {msg}")
+        dlg.progress("Publishing reconciled state to AnkiWeb…")
 
         def ankiweb_done(ok: bool, text: str) -> None:
             if ok:
-                dlg.complete(f"Dual sync complete. KelmaSync: {msg} AnkiWeb: {text}", ok=True)
-                tooltip("KelmaSync + AnkiWeb complete.")
+                dlg.complete(f"All sources reconciled. KelmaSync: {msg} AnkiWeb: {text}", ok=True)
+                tooltip("KelmaSync and AnkiWeb reconciled.")
             else:
                 dlg.complete(f"KelmaSync complete, but {text}", ok=False)
                 tooltip(f"KelmaSync complete; AnkiWeb issue: {text}")
 
         _v2_run_ankiweb_sync(progress=dlg.progress, done=ankiweb_done)
 
-    try:
-        mw.taskman.run_in_background(_work, _done, uses_collection=True)
-    except Exception as err:  # noqa: BLE001
-        if _V2_ACTIVE_ACTION == "sync":
+    def start_kelma_reconcile() -> None:
+        global _V2_ACTIVE_ACTION
+        _V2_ACTIVE_ACTION = "sync"
+        dlg.progress("Comparing Anki / AnkiWeb with KelmaSync…")
+        try:
+            mw.taskman.run_in_background(_work, _done, uses_collection=True)
+        except Exception as err:  # noqa: BLE001
             _V2_ACTIVE_ACTION = None
-        dlg.complete(f"Could not start sync: {err}", ok=False)
-        tooltip(f"KelmaSync: could not start sync: {err}")
+            dlg.complete(f"Could not start KelmaSync reconciliation: {err}", ok=False)
+
+    if not also_ankiweb:
+        start_kelma_reconcile()
+        return
+
+    # Capture a small checksum/timestamp manifest around the initial native
+    # sync. This makes source activity visible before Kelma conflict policy runs.
+    snapshots: dict[str, dict] = {}
+
+    def snapshot_work():
+        from kelma_sync_v2 import anki_local
+        return anki_local.local_manifest(mw.col, deck_names=deck_names)
+
+    def changed_count(before: dict, after: dict) -> int:
+        specs = (("notes", "guid"), ("cards", "logical_key"),
+                 ("notetypes", "notetype_id"), ("decks", "name"))
+        changed = 0
+        for resource, key in specs:
+            def values(manifest):
+                return {
+                    str(item.get(key)): (item.get("checksum"), item.get("modified_at"))
+                    for item in manifest.get(resource, [])
+                }
+            left, right = values(before), values(after)
+            changed += sum(left.get(k) != right.get(k) for k in set(left) | set(right))
+        return changed
+
+    def after_post_snapshot(future: Future) -> None:
+        try:
+            after = future.result()
+        except Exception as err:  # noqa: BLE001
+            dlg.complete(f"Could not inspect post-AnkiWeb state: {err}", ok=False)
+            return
+        count = changed_count(snapshots["before"], after)
+        dlg.progress(f"AnkiWeb preflight complete: {count} scoped resource(s) changed locally.")
+        start_kelma_reconcile()
+
+    def initial_ankiweb_done(ok: bool, text: str) -> None:
+        if not ok:
+            dlg.complete(f"Cannot reconcile sources: {text}", ok=False)
+            return
+        dlg.progress("AnkiWeb sync complete; checking what changed…")
+        mw.taskman.run_in_background(snapshot_work, after_post_snapshot, uses_collection=True)
+
+    def after_pre_snapshot(future: Future) -> None:
+        global _V2_ACTIVE_ACTION
+        try:
+            snapshots["before"] = future.result()
+        except Exception as err:  # noqa: BLE001
+            _V2_ACTIVE_ACTION = None
+            dlg.complete(f"Could not inspect local state: {err}", ok=False)
+            return
+        dlg.progress("Initial source check: syncing AnkiWeb first…")
+        _v2_run_ankiweb_sync(progress=dlg.progress, done=initial_ankiweb_done)
+
+    mw.taskman.run_in_background(snapshot_work, after_pre_snapshot, uses_collection=True)
 
 
 # -----------------------------------------------------------------------------
