@@ -36,26 +36,52 @@ def apply_card(col: Collection, record: dict[str, Any]) -> int:
     """Apply server scheduling to an existing local card.
 
     Card creation is driven by notes/notetypes; if the card id is absent locally
-    we skip with an explicit error rather than inventing a card.
+    we skip with an explicit error rather than inventing a card. The card is
+    resolved by logical identity (note_guid, ord) when available, because
+    card_id is a local creation timestamp and differs across collections.
+    Day-based scheduling (`due`/`odue`) is shifted from the writing collection's
+    creation-day scale to this collection's, using the `_crt` tag.
     """
-    cid = int(record.get("card_id") or 0)
     sched = dict(record.get("scheduling") or {})
+    note_guid = record.get("note_guid") or ""
+    ord_ = record.get("ord")
+    cid = 0
+    if note_guid and ord_ is not None:
+        row = col.db.first(
+            "SELECT c.id FROM cards c JOIN notes n ON n.id = c.nid WHERE n.guid = ? AND c.ord = ?",
+            note_guid, int(ord_),
+        )
+        if row:
+            cid = int(row[0])
     if not cid:
-        raise ValueError("server card missing card_id")
-    row = col.db.first("SELECT id FROM cards WHERE id = ?", cid)
-    if not row:
-        raise ValueError(f"local card not found: {cid}")
+        cid = int(record.get("card_id") or 0)
+        if not cid:
+            raise ValueError("server card missing identity")
+        if not col.db.first("SELECT id FROM cards WHERE id = ?", cid):
+            raise ValueError(f"local card not found: {cid}")
+
+    queue = int(sched.get("queue", 0) or 0)
+    due = int(sched.get("due", 0) or 0)
+    odue = int(sched.get("odue", 0) or 0)
+    odid = int(sched.get("odid", 0) or 0)
+    writer_crt = int(sched.get("_crt", 0) or 0)
+    if writer_crt:
+        day_shift = (writer_crt // 86400) - (int(col.crt) // 86400)
+        if queue in (2, 3):
+            due += day_shift
+            if odid != 0:
+                odue += day_shift
     fields = {
         "type": int(sched.get("type", 0) or 0),
-        "queue": int(sched.get("queue", 0) or 0),
-        "due": int(sched.get("due", 0) or 0),
+        "queue": queue,
+        "due": due,
         "ivl": int(sched.get("ivl", 0) or 0),
         "factor": int(sched.get("factor", 0) or 0),
         "reps": int(sched.get("reps", 0) or 0),
         "lapses": int(sched.get("lapses", 0) or 0),
         "left": int(sched.get("left", 0) or 0),
-        "odue": int(sched.get("odue", 0) or 0),
-        "odid": int(sched.get("odid", 0) or 0),
+        "odue": odue,
+        "odid": odid,
         "flags": int(sched.get("flags", 0) or 0),
         "data": sched.get("data", "") or "",
     }

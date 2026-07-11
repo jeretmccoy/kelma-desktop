@@ -122,6 +122,11 @@ def card_record(col: Collection, card_id: int) -> dict[str, Any] | None:
         "odid": int(odid or 0),
         "flags": int(flags or 0),
         "data": data or "",
+        # Collection creation timestamp. Day-based `due`/`odue` values are
+        # relative to this; other collections use it to convert to their own
+        # day scale on apply. Excluded from the card checksum (checksum ignores
+        # scheduling), so it never causes false conflicts.
+        "_crt": int(col.crt),
     }
     return {
         "card_id": int(cid),
@@ -292,9 +297,15 @@ def deck_record(col: Collection, name: str) -> dict[str, Any] | None:
 def deck_manifest(col: Collection, deck_names: list[str] | None = None) -> list[dict[str, Any]]:
     out = []
     allowed = set(deck_names or [])
+
+    def _in_scope(name: str) -> bool:
+        # Include picked decks AND their subdecks, matching the prefix-based
+        # note/card scoping so a subdeck deck record isn't reported one-sided.
+        return name in allowed or any(name.startswith(a + "::") for a in allowed)
+
     for deck in col.decks.all():
         name = deck.get("name", "")
-        if deck_names and name not in allowed:
+        if deck_names and not _in_scope(name):
             continue
         cfg = _normalized_deck_config(deck)
         out.append({
