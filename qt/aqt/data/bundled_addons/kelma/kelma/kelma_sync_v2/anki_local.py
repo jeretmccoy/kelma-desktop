@@ -134,6 +134,67 @@ def card_record(col: Collection, card_id: int) -> dict[str, Any] | None:
     }
 
 
+def repair_duplicate_cards(col: Collection, deck_names: list[str] | None = None, progress=None) -> int:
+    """Remove duplicate cards in a deck scope by logical card identity.
+
+    Anki card ids are local creation timestamps and are not stable across
+    collections. The logical identity of a generated card is normally
+    (note_guid, ord). Empty note GUIDs are invalid for sync, but older imports
+    can contain them; for those, use (mid, fields, tags, ord) so exact duplicate
+    blank-GUID notes don't inflate deck counts forever.
+
+    Keeps the newest card id in each duplicate group and deletes the rest. If a
+    deleted card's note has no remaining cards, the orphan note is deleted too.
+    """
+    dids = _deck_ids_for_names(col, deck_names or []) if deck_names else []
+    where = ""
+    params: list[int] = []
+    if deck_names:
+        if not dids:
+            return 0
+        where = "WHERE c.did IN (" + ",".join("?" for _ in dids) + ")"
+        params = dids
+    rows = col.db.all(
+        f"""
+        SELECT c.id, c.nid, c.ord, n.guid, n.mid, n.flds, n.tags
+        FROM cards c JOIN notes n ON n.id = c.nid
+        {where}
+        ORDER BY c.id
+        """,
+        *params,
+    )
+    groups: dict[tuple, list[tuple[int, int]]] = {}
+    for cid, nid, ord_, guid, mid, flds, tags in rows:
+        if guid:
+            key = ("guid", str(guid), int(ord_ or 0))
+        else:
+            key = ("blank", int(mid or 0), str(flds or ""), str(tags or ""), int(ord_ or 0))
+        groups.setdefault(key, []).append((int(cid), int(nid)))
+
+    deleted = 0
+    for key, cards in groups.items():
+        if len(cards) <= 1:
+            continue
+        # Keep newest/highest id; delete older duplicates.
+        cards = sorted(cards, key=lambda x: x[0])
+        for cid, nid in cards[:-1]:
+            col.db.execute("DELETE FROM revlog WHERE cid = ?", cid)
+            col.db.execute("DELETE FROM cards WHERE id = ?", cid)
+            deleted += 1
+            remaining = col.db.scalar("SELECT COUNT(*) FROM cards WHERE nid = ?", nid) or 0
+            if int(remaining) == 0:
+                col.db.execute("DELETE FROM notes WHERE id = ?", nid)
+    if deleted:
+        try:
+            col.save()
+        except Exception:
+            # save() is deprecated in newer Anki and may be unnecessary.
+            pass
+        if progress:
+            progress(f"Repaired {deleted} duplicate local card(s)")
+    return deleted
+
+
 def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[dict[str, Any]]:
     out = []
     dids = _deck_ids_for_names(col, deck_names or []) if deck_names else []
@@ -160,6 +221,11 @@ def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[
         if did_int not in deck_names:
             deck = col.decks.get(did_int)
             deck_names[did_int] = deck.get("name", str(did_int)) if deck else str(did_int)
+        if not guid:
+            # Empty note GUIDs cannot be represented safely in v2. Notes already
+            # skip them; keep cards consistent so they are not pushed as a
+            # single ambiguous empty-guid identity.
+            continue
         deck_name = deck_names[did_int]
         scheduling = {
             "type": int(typ or 0), "queue": int(queue or 0), "due": int(due or 0),

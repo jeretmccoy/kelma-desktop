@@ -157,6 +157,10 @@ def sync_content_once(
     if progress:
         progress("Phase 3/9: loading previous sync snapshot…")
     snapshot = sync_state.load_state(col)
+    # Repair local duplicate generated cards before building manifests. This
+    # prevents invalid duplicate cards/blank-GUID duplicate notes from being
+    # counted or pushed forever.
+    anki_local.repair_duplicate_cards(col, deck_names=deck_names, progress=progress)
     if progress:
         progress("Phase 4/9: building local key snapshot…")
     local_note_manifest = anki_local.note_manifest(col, deck_names=deck_names, progress=progress)
