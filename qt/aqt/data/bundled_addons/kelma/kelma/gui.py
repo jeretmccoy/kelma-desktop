@@ -3351,7 +3351,7 @@ def _build_menu() -> None:
         act_sync.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=False))
         menu.addAction(act_sync)
     else:
-        act_staged = QAction("Open staged sync menu…", mw)
+        act_staged = QAction("Open joint-state sync…", mw)
         act_staged.triggered.connect(_v2_sync_menu)
         menu.addAction(act_staged)
 
