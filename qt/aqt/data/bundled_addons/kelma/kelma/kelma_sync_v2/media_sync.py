@@ -80,7 +80,7 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
     if progress:
         progress(
             f"Media: uploading {upload_total} files "
-            f"({_format_mib(upload_bytes_total)}) with 8 connections…"
+            f"({_format_mib(upload_bytes_total)}) with 50 connections…"
         )
 
     def upload_one(item: tuple[str, Path, int]) -> tuple[str, int]:
@@ -93,9 +93,9 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
         return filename, size
 
     # R2/Cloudflare spends more time on request latency than transferring these
-    # mostly-small Anki media files. A bounded pool cuts a first upload from
-    # hours to minutes without loading more than a handful of files at once.
-    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="kelma-media") as pool:
+    # mostly-small Anki media files. Use a wide but bounded pool for the initial
+    # multi-thousand-file upload; each worker holds at most one file in memory.
+    with ThreadPoolExecutor(max_workers=50, thread_name_prefix="kelma-media") as pool:
         futures = [pool.submit(upload_one, item) for item in uploads]
         for future in as_completed(futures):
             filename, size = future.result()
@@ -105,7 +105,7 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
             if progress and (
                 result.uploaded == 1
                 or result.uploaded == upload_total
-                or result.uploaded % 25 == 0
+                or result.uploaded % 100 == 0
             ):
                 progress(
                     f"Media upload {result.uploaded}/{upload_total} · "
