@@ -1781,8 +1781,166 @@ def _v2_kelma_deck_names() -> list[str]:
     return config.decks_for_service(consts.KELMA, names)
 
 
+class V2LoginDialog(QDialog):
+    """Single, branded KelmaSync sign-in card with inline error feedback."""
+
+    def __init__(self, parent, client, cfg: dict, endpoint: str) -> None:
+        super().__init__(parent)
+        self._client = client
+        self.auth_out = None
+        self.username_value = ""
+        self.client_label = "KelmaDesktop" if cfg.get("kelmasync_only") else "Anki plugin"
+
+        self.setWindowTitle("Sign in to KelmaSync")
+        self.setModal(True)
+        self.setMinimumWidth(430)
+        self.setMaximumWidth(520)
+        self.setStyleSheet("""
+            QDialog { background: palette(window); }
+            QWidget#loginCard {
+                background: palette(base);
+                border: 1px solid palette(midlight);
+                border-radius: 14px;
+            }
+            QLabel#loginMark {
+                color: white; background: #6366f1; border-radius: 10px;
+                font-size: 20px; font-weight: 700; padding: 8px 12px;
+            }
+            QLabel#loginTitle { font-size: 22px; font-weight: 700; }
+            QLabel#loginSubtitle { color: palette(mid); font-size: 13px; }
+            QLabel#endpointPill {
+                color: #4f46e5; background: rgba(99, 102, 241, 0.10);
+                border: 1px solid rgba(99, 102, 241, 0.25);
+                border-radius: 8px; padding: 5px 9px;
+            }
+            QLabel#fieldLabel { font-size: 12px; font-weight: 600; }
+            QLineEdit {
+                min-height: 34px; padding: 3px 10px;
+                border: 1px solid palette(midlight); border-radius: 8px;
+                background: palette(window); selection-background-color: #6366f1;
+            }
+            QLineEdit:focus { border: 2px solid #6366f1; padding: 2px 9px; }
+            QLabel#loginError {
+                color: #b91c1c; background: rgba(239, 68, 68, 0.10);
+                border-radius: 7px; padding: 7px 9px;
+            }
+            QPushButton#signInButton {
+                min-height: 38px; color: white; background: #6366f1;
+                border: none; border-radius: 9px; font-weight: 700;
+            }
+            QPushButton#signInButton:hover { background: #4f46e5; }
+            QPushButton#signInButton:pressed { background: #4338ca; }
+            QPushButton#signInButton:disabled { background: #a5b4fc; }
+            QPushButton#cancelButton { min-height: 34px; border: none; }
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(22, 22, 22, 22)
+        card = QWidget()
+        card.setObjectName("loginCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(26, 24, 26, 22)
+        layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        mark = QLabel("K")
+        mark.setObjectName("loginMark")
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
+        heading = QVBoxLayout()
+        title = QLabel("Welcome to KelmaSync")
+        title.setObjectName("loginTitle")
+        subtitle = QLabel("Keep your notes and review schedule in sync.")
+        subtitle.setObjectName("loginSubtitle")
+        heading.addWidget(title)
+        heading.addWidget(subtitle)
+        header.addLayout(heading, 1)
+        layout.addLayout(header)
+
+        endpoint_label = QLabel(f"●  Secure connection  ·  {endpoint.removeprefix('https://')}")
+        endpoint_label.setObjectName("endpointPill")
+        layout.addWidget(endpoint_label)
+        layout.addSpacing(5)
+
+        email_label = QLabel("EMAIL")
+        email_label.setObjectName("fieldLabel")
+        layout.addWidget(email_label)
+        self.email = QLineEdit(str(cfg.get("v2_username", "")))
+        self.email.setPlaceholderText("you@example.com")
+        self.email.setClearButtonEnabled(True)
+        layout.addWidget(self.email)
+
+        password_label = QLabel("PASSWORD")
+        password_label.setObjectName("fieldLabel")
+        layout.addWidget(password_label)
+        self.password = QLineEdit()
+        self.password.setPlaceholderText("Enter your password")
+        self.password.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(self.password)
+
+        show_password = QCheckBox("Show password")
+        show_password.toggled.connect(
+            lambda shown: self.password.setEchoMode(
+                QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password
+            )
+        )
+        layout.addWidget(show_password)
+
+        self.error = QLabel("")
+        self.error.setObjectName("loginError")
+        self.error.setWordWrap(True)
+        self.error.hide()
+        layout.addWidget(self.error)
+
+        self.sign_in = QPushButton("Sign in")
+        self.sign_in.setObjectName("signInButton")
+        self.sign_in.setDefault(True)
+        self.sign_in.clicked.connect(self._sign_in)
+        layout.addWidget(self.sign_in)
+
+        cancel = QPushButton("Cancel")
+        cancel.setObjectName("cancelButton")
+        cancel.clicked.connect(self.reject)
+        layout.addWidget(cancel)
+
+        signup = QLabel('New to Kelma? <a href="https://kelma.tech">Create an account</a>')
+        signup.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        signup.setOpenExternalLinks(True)
+        layout.addWidget(signup)
+        outer.addWidget(card)
+
+        (self.password if self.email.text().strip() else self.email).setFocus()
+
+    def _show_error(self, message: str) -> None:
+        clean = re.sub(r"^.*?:\s*", "", str(message)).strip()
+        self.error.setText(clean or "Sign-in failed. Check your email and password.")
+        self.error.show()
+        self.password.selectAll()
+        self.password.setFocus()
+
+    def _sign_in(self) -> None:
+        username = self.email.text().strip()
+        password = self.password.text()
+        if not username or not password:
+            self._show_error("Enter both your email and password.")
+            return
+        self.error.hide()
+        self.sign_in.setEnabled(False)
+        self.sign_in.setText("Signing in…")
+        QApplication.processEvents()
+        try:
+            self.auth_out = self._client.login(username, password, self.client_label)
+        except Exception as err:  # noqa: BLE001
+            self.sign_in.setEnabled(True)
+            self.sign_in.setText("Sign in")
+            self._show_error(str(err))
+            return
+        self.username_value = username
+        self.accept()
+
+
 def _v2_client_or_login():
-    """Return a V2Client, prompting for credentials if no token is saved."""
+    """Return a V2Client, showing one polished sign-in dialog if needed."""
     try:
         _ensure_v2_vendor()
         from kelma_sync_v2.client import V2Client
@@ -1791,34 +1949,23 @@ def _v2_client_or_login():
         return None
 
     cfg = config.get()
-    endpoint = cfg.get("v2_url") or "http://localhost:8081"
+    endpoint = cfg.get("v2_url") or "https://sync2.ankiai.tech"
     token = cfg.get("v2_token") or ""
-    client = V2Client(endpoint, token=token, timeout=8)
+    client = V2Client(endpoint, token=token, timeout=12)
     if token:
         return client
 
-    username, ok = QInputDialog.getText(mw, "KelmaSync login", "Username:", text=cfg.get("v2_username", ""))
-    if not ok or not username:
-        return None
-    password, ok = QInputDialog.getText(mw, "KelmaSync login", "Password:", QLineEdit.EchoMode.Password)
-    if not ok or not password:
-        return None
-    label, ok = QInputDialog.getText(mw, "KelmaSync login", "Client label:", text=cfg.get("v2_client_label", "Anki plugin"))
-    if not ok or not label:
+    dialog = V2LoginDialog(mw, client, cfg, endpoint)
+    if dialog.exec() != QDialog.DialogCode.Accepted or dialog.auth_out is None:
         return None
 
-    try:
-        auth_out = client.login(username, password, label)
-    except Exception as err:  # noqa: BLE001
-        tooltip(f"KelmaSync v2 login failed: {err}")
-        return None
     cfg["v2_url"] = endpoint
-    cfg["v2_username"] = username
-    cfg["v2_token"] = auth_out.token
-    cfg["v2_client_id"] = auth_out.client_id
-    cfg["v2_client_label"] = label
+    cfg["v2_username"] = dialog.username_value
+    cfg["v2_token"] = dialog.auth_out.token
+    cfg["v2_client_id"] = dialog.auth_out.client_id
+    cfg["v2_client_label"] = dialog.client_label
     config.save(cfg)
-    tooltip("KelmaSync login saved.")
+    tooltip("Signed in to KelmaSync.")
     return client
 
 
