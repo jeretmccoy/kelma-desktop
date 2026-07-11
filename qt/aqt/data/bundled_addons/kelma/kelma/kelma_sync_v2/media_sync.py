@@ -5,6 +5,7 @@ media by filename inside field HTML or [sound:...] tags.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 import mimetypes
@@ -63,21 +64,53 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
     refs = sorted(referenced_media_filenames(col))
     total = len(refs)
     if progress:
-        progress(f"Media: {total} referenced local files; checking uploads…")
-    for i, filename in enumerate(refs, 1):
-        if progress and (i == 1 or i == total or i % 1000 == 0):
-            progress(f"Media upload check {i}/{total} · uploaded {result.uploaded}, skipped {result.skipped}")
+        progress(f"Media: {total} referenced local files; planning uploads…")
+
+    uploads: list[tuple[str, Path, int]] = []
+    for filename in refs:
         path = _safe_media_path(media_dir, filename)
-        if not path.exists() or not path.is_file():
+        if not path.exists() or not path.is_file() or filename in server_files:
             result.skipped += 1
             continue
-        if filename in server_files:
-            result.skipped += 1
-            continue
-        data = path.read_bytes()
-        client.put_media(filename, data, mimetypes.guess_type(filename)[0] or "application/octet-stream")
-        server_files.add(filename)
-        result.uploaded += 1
+        uploads.append((filename, path, path.stat().st_size))
+
+    upload_total = len(uploads)
+    upload_bytes_total = sum(size for _, _, size in uploads)
+    uploaded_bytes = 0
+    if progress:
+        progress(
+            f"Media: uploading {upload_total} files "
+            f"({_format_mib(upload_bytes_total)}) with 8 connections…"
+        )
+
+    def upload_one(item: tuple[str, Path, int]) -> tuple[str, int]:
+        filename, path, size = item
+        client.put_media(
+            filename,
+            path.read_bytes(),
+            mimetypes.guess_type(filename)[0] or "application/octet-stream",
+        )
+        return filename, size
+
+    # R2/Cloudflare spends more time on request latency than transferring these
+    # mostly-small Anki media files. A bounded pool cuts a first upload from
+    # hours to minutes without loading more than a handful of files at once.
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="kelma-media") as pool:
+        futures = [pool.submit(upload_one, item) for item in uploads]
+        for future in as_completed(futures):
+            filename, size = future.result()
+            server_files.add(filename)
+            result.uploaded += 1
+            uploaded_bytes += size
+            if progress and (
+                result.uploaded == 1
+                or result.uploaded == upload_total
+                or result.uploaded % 25 == 0
+            ):
+                progress(
+                    f"Media upload {result.uploaded}/{upload_total} · "
+                    f"{_format_mib(uploaded_bytes)} / {_format_mib(upload_bytes_total)}"
+                )
 
     if progress:
         progress("Media: scanning local media directory…")
@@ -114,6 +147,10 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
     if progress:
         progress(f"Media complete: uploaded {result.uploaded}, downloaded {result.downloaded}, skipped {result.skipped}")
     return result
+
+
+def _format_mib(size: int) -> str:
+    return f"{size / (1024 * 1024):.1f} MiB"
 
 
 def _clean_media_name(name: str) -> str:
