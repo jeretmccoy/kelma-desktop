@@ -2259,11 +2259,12 @@ def _v2_test_sync_notes() -> None:
         try:
             result = future.result()
         except ContentSyncConflict as conflict:
-            msg = f"{len(conflict.conflicts)} {conflict.resource} conflict(s). No checkpoint saved."
+            msg = f"{len(conflict.conflicts)} {conflict.resource} conflict(s). No checkpoint saved. Opening resolver…"
             dlg.complete(msg, ok=False)
             tooltip(f"KelmaSync: {msg}")
-            if conflict.resource == "note":
-                V2NoteConflictDialog(mw, client, conflict.conflicts).exec()
+            # Open the full checksum diff resolver for notes/cards/decks/notetypes.
+            # It lets the user explicitly Accept server or Force local.
+            V2FullDiffDialog(mw).exec()
             return
         except Exception as err:  # noqa: BLE001
             dlg.complete(f"Sync failed: {err}", ok=False)
