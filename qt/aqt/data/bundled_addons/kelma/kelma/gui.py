@@ -4,10 +4,13 @@ plus integration with the Sync button."""
 from __future__ import annotations
 
 import difflib
+import re
 import sys
+import time
 from collections import Counter
 from concurrent.futures import Future
 from datetime import datetime
+from pathlib import Path
 
 from aqt import mw
 from aqt.qt import (
@@ -93,11 +96,7 @@ def _deck_ids_for_names(names: list[str]) -> list[int]:
 
 
 def _collection_counts_for_decks(deck_names: list[str]) -> tuple[int, int]:
-    """Cheap collection size: (distinct notes, cards) for exact selected decks.
-
-    This intentionally avoids scanning note fields/media files so opening the
-    sync menu remains instant.
-    """
+    """Cheap collection size: (distinct notes, cards) for exact selected decks."""
     dids = _deck_ids_for_names(deck_names)
     if not dids:
         return (0, 0)
@@ -105,6 +104,94 @@ def _collection_counts_for_decks(deck_names: list[str]) -> tuple[int, int]:
     cards = mw.col.db.scalar(f"SELECT COUNT(*) FROM cards WHERE did IN ({marks})", *dids) or 0
     notes = mw.col.db.scalar(f"SELECT COUNT(DISTINCT nid) FROM cards WHERE did IN ({marks})", *dids) or 0
     return (int(notes), int(cards))
+
+
+_MEDIA_IMG_RE = re.compile(r'''(?i)<img\b[^>]*\bsrc=["']([^"']+)["']''')
+_MEDIA_SOUND_RE = re.compile(r'''\[sound:([^\]]+)\]''')
+
+
+def _fmt_gb(nbytes: int) -> str:
+    return f"{nbytes / (1024 ** 3):.2f} GB"
+
+
+def _clean_media_name(name: str) -> str:
+    name = str(name or "").strip().replace("%20", " ")
+    if not name or name.startswith(("http://", "https://", "data:")):
+        return ""
+    if "/" in name or "\\" in name or name in {".", ".."}:
+        return ""
+    return name
+
+
+def _referenced_media_bytes_for_decks(deck_names: list[str]) -> int:
+    """Exact local media bytes referenced by notes in selected decks.
+
+    This scans note fields and media files, so do not call it while opening the
+    sync menu. Settings calls it to refresh the cached per-service size.
+    """
+    dids = _deck_ids_for_names(deck_names)
+    if not dids:
+        return 0
+    marks = ",".join("?" for _ in dids)
+    rows = mw.col.db.all(
+        f"""
+        SELECT DISTINCT n.flds
+        FROM notes n JOIN cards c ON c.nid = n.id
+        WHERE c.did IN ({marks})
+        """,
+        *dids,
+    )
+    filenames: set[str] = set()
+    for (flds,) in rows:
+        text = str(flds or "")
+        for m in _MEDIA_IMG_RE.finditer(text):
+            clean = _clean_media_name(m.group(1))
+            if clean:
+                filenames.add(clean)
+        for m in _MEDIA_SOUND_RE.finditer(text):
+            clean = _clean_media_name(m.group(1))
+            if clean:
+                filenames.add(clean)
+    media_dir = Path(mw.col.media.dir()).resolve()
+    total = 0
+    for filename in filenames:
+        try:
+            path = (media_dir / filename).resolve()
+            if (media_dir in path.parents or path == media_dir) and path.is_file():
+                total += path.stat().st_size
+        except Exception:  # noqa: BLE001
+            pass
+    return total
+
+
+def _size_cache_get(service: str) -> dict | None:
+    return state.load().get("size_cache", {}).get(service)
+
+
+def _size_cache_set(service: str, deck_names: list[str], notes: int, cards: int, media_bytes: int) -> None:
+    st = state.load()
+    st.setdefault("size_cache", {})[service] = {
+        "at": int(time.time()),
+        "decks": len(deck_names),
+        "notes": int(notes),
+        "cards": int(cards),
+        "media_bytes": int(media_bytes),
+    }
+    state.save(st)
+
+
+def _service_size_text(service: str, deck_names: list[str], *, refresh: bool = False) -> str:
+    notes, cards = _collection_counts_for_decks(deck_names)
+    cached = _size_cache_get(service)
+    if refresh:
+        media_bytes = _referenced_media_bytes_for_decks(deck_names)
+        _size_cache_set(service, deck_names, notes, cards, media_bytes)
+        gb = _fmt_gb(media_bytes)
+    elif cached:
+        gb = _fmt_gb(int(cached.get("media_bytes", 0) or 0))
+    else:
+        gb = "? GB"
+    return f"{len(deck_names)} deck(s), {notes} notes/{cards} cards, {gb}"
 
 
 def _esc(text: str) -> str:
@@ -1314,11 +1401,16 @@ class SettingsDialog(QDialog):
             s: state.pending_for_service(mw.col, names, s) for s in consts.SERVICES
         }
         self._deletions = state.pending_deletions(mw.col)
-        self._service_counts = {
-            s: _collection_counts_for_decks(config.decks_for_service(s, names))
+        self._service_size_texts = {
+            s: _service_size_text(s, config.decks_for_service(s, names), refresh=True)
             for s in config.ui_services()
         }
-        self.table.setHorizontalHeaderLabels(["Deck", "KelmaSync", "AnkiWeb"])
+        labels = ["Deck", "KelmaSync", "AnkiWeb"]
+        for s, col in _COL.items():
+            if s in self._service_size_texts:
+                cached = _size_cache_get(s) or {}
+                labels[col] = f"{consts.SERVICE_LABEL[s]}\n{_fmt_gb(int(cached.get('media_bytes', 0) or 0))}"
+        self.table.setHorizontalHeaderLabels(labels)
 
     def _status_text(self, service: str, name: str) -> str:
         added, changed = self._pending.get(service, {}).get(name, (0, 0))
@@ -1330,6 +1422,9 @@ class SettingsDialog(QDialog):
         if changed:
             parts.append(f"~{changed}")
         return " ".join(parts)
+
+    def _route_cell_text(self, service: str, name: str, checked: bool) -> str:
+        return self._status_text(service, name) if checked else "—"
 
     def _summary_text(self) -> str:
         parts = []
@@ -1343,11 +1438,10 @@ class SettingsDialog(QDialog):
             meta = state.last_sync(s)
             when = _ago(meta["at"]) if meta and meta.get("at") else "never"
             routed = config.decks_for_service(s, getattr(self, "_deck_names", []))
-            notes, cards = getattr(self, "_service_counts", {}).get(s, (0, 0))
+            size = getattr(self, "_service_size_texts", {}).get(s) or _service_size_text(s, routed)
             parts.append(
-                f"<b>{consts.SERVICE_LABEL[s]}</b>: {len(routed)} deck(s), "
-                f"{notes} notes / {cards} cards; {ndirty} deck(s) pending "
-                f"(+{ta} ~{tc}), synced {when}"
+                f"<b>{consts.SERVICE_LABEL[s]}</b>: {size}; "
+                f"{ndirty} deck(s) pending (+{ta} ~{tc}), synced {when}"
             )
         if self._deletions:
             parts.append(f"{self._deletions} deletion(s) pending")
@@ -1361,7 +1455,7 @@ class SettingsDialog(QDialog):
             for service, col in _COL.items():
                 item = self.table.item(row, col)
                 checked = item.checkState() == Qt.CheckState.Checked
-                item.setText(self._status_text(service, name) if checked else "")
+                item.setText(self._route_cell_text(service, name, checked))
         self._suppress = False
         self.summary.setText(self._summary_text())
 
@@ -1384,7 +1478,7 @@ class SettingsDialog(QDialog):
                 item.setCheckState(
                     Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
                 )
-                item.setText(self._status_text(service, name) if checked else "")
+                item.setText(self._route_cell_text(service, name, checked))
                 self.table.setItem(row, col, item)
 
     def _apply_filter(self, text: str) -> None:
@@ -1402,7 +1496,7 @@ class SettingsDialog(QDialog):
                 item = self.table.item(row, col)
                 item.setCheckState(check)
                 name = self.table.item(row, 0).text()
-                item.setText(self._status_text(service, name) if value else "")
+                item.setText(self._route_cell_text(service, name, value))
         self._suppress = False
         self._anchor[col] = None
 
@@ -1430,10 +1524,10 @@ class SettingsDialog(QDialog):
                 if cell is not None:
                     cell.setCheckState(check)
                     name = self.table.item(r, 0).text()
-                    cell.setText(self._status_text(service, name) if checked else "")
+                    cell.setText(self._route_cell_text(service, name, checked))
             self._suppress = False
         name = self.table.item(row, 0).text()
-        item.setText(self._status_text(service, name) if checked else "")
+        item.setText(self._route_cell_text(service, name, checked))
         self._anchor[col] = row
 
     def _save(self) -> None:
@@ -1486,15 +1580,14 @@ def _service_line_html(service: str, deck_names: list[str], cfg: dict) -> str:
         body = "<i>not logged in</i> — sign in or create an account"
     else:
         service_decks = config.decks_for_service(service, deck_names)
-        decks = len(service_decks)
-        notes, cards = _collection_counts_for_decks(service_decks)
+        size = _service_size_text(service, service_decks, refresh=False)
         user = cfg["kelmasync_user"] if service == consts.KELMA else cfg["ankiweb_user"]
         extra = ""
         if service == consts.KELMA:
             extra = f" · {cfg.get('kelmasync_path', consts.PATH_AUTO)}"
         meta = state.last_sync(service)
         when = _ago(meta["at"]) if meta and meta.get("at") else "never"
-        body = f"{user or '?'} · {decks} decks · {notes} notes/{cards} cards{extra} · synced {when}"
+        body = f"{user or '?'} · {size}{extra} · synced {when}"
     accent = branding.accent()
     return (
         f'<span style="color:{accent}; font-weight:bold;">{label}</span>'
@@ -2300,12 +2393,10 @@ def _v2_sync_menu() -> None:
     user = cfg.get("v2_username") or "(no username saved)"
     all_decks = [d.name for d in mw.col.decks.all_names_and_ids()]
     kelma_decks = config.decks_for_service(consts.KELMA, all_decks)
-    kelma_notes, kelma_cards = _collection_counts_for_decks(kelma_decks)
-    scope_line = f"KelmaSync: ✓ {len(kelma_decks)} deck(s), {kelma_notes} notes/{kelma_cards} cards"
+    scope_line = f"KelmaSync: ✓ {_service_size_text(consts.KELMA, kelma_decks, refresh=False)}"
     if not config.kelmasync_only():
         ankiweb_decks = config.decks_for_service(consts.ANKIWEB, all_decks)
-        aw_notes, aw_cards = _collection_counts_for_decks(ankiweb_decks)
-        scope_line += f" · AnkiWeb: ✓ {len(ankiweb_decks)} deck(s), {aw_notes} notes/{aw_cards} cards"
+        scope_line += f" · AnkiWeb: ✓ {_service_size_text(consts.ANKIWEB, ankiweb_decks, refresh=False)}"
     active = _v2_active_message()
     active_html = f"<br><span style='color:#d98'>⚠ {active}</span>" if active else ""
     status_label = QLabel(
