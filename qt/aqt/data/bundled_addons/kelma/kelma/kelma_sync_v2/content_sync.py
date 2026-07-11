@@ -242,7 +242,13 @@ def sync_content_once(
         raise ContentSyncConflict("card", e.conflicts) from e
     if progress:
         progress("Final phase: syncing media…")
-    result.media = sync_media_once(col, client, manifest, progress=progress)
+    result.media = sync_media_once(
+        col,
+        client,
+        manifest,
+        progress=progress,
+        deck_names=deck_names or ([deck_name] if deck_name else None),
+    )
     result.server_time = result.notes.server_time or manifest.get("server_time", "")
 
     # Save the new snapshot so next sync can detect deletes.

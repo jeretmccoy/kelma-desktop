@@ -29,10 +29,31 @@ class MediaSyncResult:
     skipped: int = 0
 
 
-def referenced_media_filenames(col: Collection) -> set[str]:
-    """Return media filenames referenced by local note fields."""
+def referenced_media_filenames(
+    col: Collection,
+    deck_names: list[str] | None = None,
+) -> set[str]:
+    """Return files referenced by notes in the selected deck scope."""
+    if deck_names:
+        from .anki_local import _deck_ids_for_names
+
+        dids = _deck_ids_for_names(col, deck_names)
+        if not dids:
+            return set()
+        marks = ",".join("?" for _ in dids)
+        rows = col.db.all(
+            f"""
+            SELECT DISTINCT n.flds
+            FROM notes n JOIN cards c ON c.nid = n.id
+            WHERE c.did IN ({marks})
+            """,
+            *dids,
+        )
+    else:
+        rows = col.db.all("SELECT flds FROM notes")
+
     out: set[str] = set()
-    for (flds,) in col.db.all("SELECT flds FROM notes"):
+    for (flds,) in rows:
         text = str(flds or "")
         for m in _IMG_RE.finditer(text):
             name = _clean_media_name(m.group(1))
@@ -45,8 +66,14 @@ def referenced_media_filenames(col: Collection) -> set[str]:
     return out
 
 
-def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | None = None, progress=None) -> MediaSyncResult:
-    """Upload referenced local files and download missing server files.
+def sync_media_once(
+    col: Collection,
+    client: V2Client,
+    server_manifest: dict | None = None,
+    progress=None,
+    deck_names: list[str] | None = None,
+) -> MediaSyncResult:
+    """Sync files referenced by notes in the selected deck scope.
 
     Fast path: use the manifest's media list instead of one HEAD request per
     local media reference. This removes the biggest sync-time multiplier.
@@ -63,7 +90,8 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
 
     if progress:
         progress("Media: scanning note fields for referenced files…")
-    refs = sorted(referenced_media_filenames(col))
+    refs = sorted(referenced_media_filenames(col, deck_names=deck_names))
+    ref_set = set(refs)
     total = len(refs)
     if progress:
         progress(f"Media: {total} referenced local files; planning uploads…")
@@ -131,7 +159,13 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
 
     if progress:
         progress("Media: checking server files against local media…")
-    server_entries = list(server_manifest.get("media", []) or [])
+    # Media is user-global on the server, but deck routing is local. Only pull
+    # blobs referenced by notes in this Kelma deck scope; otherwise a dual-sync
+    # Anki client would download media belonging to AnkiWeb-only decks.
+    server_entries = [
+        entry for entry in (server_manifest.get("media", []) or [])
+        if entry.get("filename") in ref_set
+    ]
     total_downloads = len(server_entries)
     for i, entry in enumerate(server_entries, 1):
         if progress and (i == 1 or i == total_downloads or i % 1000 == 0):
