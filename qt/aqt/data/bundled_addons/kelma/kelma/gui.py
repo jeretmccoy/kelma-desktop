@@ -1782,7 +1782,7 @@ def _v2_kelma_deck_names() -> list[str]:
 
 
 class V2LoginDialog(QDialog):
-    """Single, branded KelmaSync sign-in card with inline error feedback."""
+    """Simple KelmaSync sign-in dialog with inline error feedback."""
 
     def __init__(self, parent, client, cfg: dict, endpoint: str) -> None:
         super().__init__(parent)
@@ -1791,123 +1791,58 @@ class V2LoginDialog(QDialog):
         self.username_value = ""
         self.client_label = "KelmaDesktop" if cfg.get("kelmasync_only") else "Anki plugin"
 
-        self.setWindowTitle("Sign in to KelmaSync")
+        self.setWindowTitle("KelmaSync Sign In")
         self.setModal(True)
-        self.setMinimumWidth(430)
-        self.setMaximumWidth(520)
-        self.setStyleSheet("""
-            QDialog { background: palette(window); }
-            QWidget#loginCard {
-                background: palette(base);
-                border: 1px solid palette(midlight);
-                border-radius: 14px;
-            }
-            QLabel#loginMark {
-                color: white; background: #6366f1; border-radius: 10px;
-                font-size: 20px; font-weight: 700; padding: 8px 12px;
-            }
-            QLabel#loginTitle { font-size: 22px; font-weight: 700; }
-            QLabel#loginSubtitle { color: palette(mid); font-size: 13px; }
-            QLabel#endpointPill {
-                color: #4f46e5; background: rgba(99, 102, 241, 0.10);
-                border: 1px solid rgba(99, 102, 241, 0.25);
-                border-radius: 8px; padding: 5px 9px;
-            }
-            QLabel#fieldLabel { font-size: 12px; font-weight: 600; }
-            QLineEdit {
-                min-height: 34px; padding: 3px 10px;
-                border: 1px solid palette(midlight); border-radius: 8px;
-                background: palette(window); selection-background-color: #6366f1;
-            }
-            QLineEdit:focus { border: 2px solid #6366f1; padding: 2px 9px; }
-            QLabel#loginError {
-                color: #b91c1c; background: rgba(239, 68, 68, 0.10);
-                border-radius: 7px; padding: 7px 9px;
-            }
-            QPushButton#signInButton {
-                min-height: 38px; color: white; background: #6366f1;
-                border: none; border-radius: 9px; font-weight: 700;
-            }
-            QPushButton#signInButton:hover { background: #4f46e5; }
-            QPushButton#signInButton:pressed { background: #4338ca; }
-            QPushButton#signInButton:disabled { background: #a5b4fc; }
-            QPushButton#cancelButton { min-height: 34px; border: none; }
-        """)
+        self.setMinimumWidth(360)
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(22, 22, 22, 22)
-        card = QWidget()
-        card.setObjectName("loginCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(26, 24, 26, 22)
-        layout.setSpacing(10)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 16)
+        layout.setSpacing(8)
 
-        header = QHBoxLayout()
-        mark = QLabel("K")
-        mark.setObjectName("loginMark")
-        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
-        heading = QVBoxLayout()
-        title = QLabel("Welcome to KelmaSync")
-        title.setObjectName("loginTitle")
-        subtitle = QLabel("Keep your notes and review schedule in sync.")
-        subtitle.setObjectName("loginSubtitle")
-        heading.addWidget(title)
-        heading.addWidget(subtitle)
-        header.addLayout(heading, 1)
-        layout.addLayout(header)
+        title = QLabel("KelmaSync")
+        font = title.font()
+        font.setPointSize(15)
+        font.setBold(True)
+        title.setFont(font)
+        layout.addWidget(title)
 
-        endpoint_label = QLabel(f"●  Secure connection  ·  {endpoint.removeprefix('https://')}")
-        endpoint_label.setObjectName("endpointPill")
-        layout.addWidget(endpoint_label)
-        layout.addSpacing(5)
+        server = QLabel(endpoint.removeprefix("https://").removeprefix("http://"))
+        server.setStyleSheet("color: palette(mid);")
+        layout.addWidget(server)
+        layout.addSpacing(6)
 
-        email_label = QLabel("EMAIL")
-        email_label.setObjectName("fieldLabel")
-        layout.addWidget(email_label)
+        layout.addWidget(QLabel("Email"))
         self.email = QLineEdit(str(cfg.get("v2_username", "")))
         self.email.setPlaceholderText("you@example.com")
-        self.email.setClearButtonEnabled(True)
         layout.addWidget(self.email)
 
-        password_label = QLabel("PASSWORD")
-        password_label.setObjectName("fieldLabel")
-        layout.addWidget(password_label)
+        layout.addWidget(QLabel("Password"))
         self.password = QLineEdit()
-        self.password.setPlaceholderText("Enter your password")
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addWidget(self.password)
 
-        show_password = QCheckBox("Show password")
-        show_password.toggled.connect(
+        self.show_password = QCheckBox("Show password")
+        self.show_password.toggled.connect(
             lambda shown: self.password.setEchoMode(
                 QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password
             )
         )
-        layout.addWidget(show_password)
+        layout.addWidget(self.show_password)
 
         self.error = QLabel("")
-        self.error.setObjectName("loginError")
+        self.error.setStyleSheet("color: #b91c1c;")
         self.error.setWordWrap(True)
         self.error.hide()
         layout.addWidget(self.error)
 
-        self.sign_in = QPushButton("Sign in")
-        self.sign_in.setObjectName("signInButton")
+        layout.addSpacing(4)
+        buttons = QDialogButtonBox()
+        self.sign_in = buttons.addButton("Sign In", QDialogButtonBox.ButtonRole.AcceptRole)
         self.sign_in.setDefault(True)
+        cancel = buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
         self.sign_in.clicked.connect(self._sign_in)
-        layout.addWidget(self.sign_in)
-
-        cancel = QPushButton("Cancel")
-        cancel.setObjectName("cancelButton")
         cancel.clicked.connect(self.reject)
-        layout.addWidget(cancel)
-
-        signup = QLabel('New to Kelma? <a href="https://kelma.tech">Create an account</a>')
-        signup.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        signup.setOpenExternalLinks(True)
-        layout.addWidget(signup)
-        outer.addWidget(card)
+        layout.addWidget(buttons)
 
         (self.password if self.email.text().strip() else self.email).setFocus()
 
@@ -1926,13 +1861,11 @@ class V2LoginDialog(QDialog):
             return
         self.error.hide()
         self.sign_in.setEnabled(False)
-        self.sign_in.setText("Signing in…")
         QApplication.processEvents()
         try:
             self.auth_out = self._client.login(username, password, self.client_label)
         except Exception as err:  # noqa: BLE001
             self.sign_in.setEnabled(True)
-            self.sign_in.setText("Sign in")
             self._show_error(str(err))
             return
         self.username_value = username
