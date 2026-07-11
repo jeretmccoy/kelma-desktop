@@ -95,17 +95,19 @@ def apply_card(col: Collection, record: dict[str, Any]) -> int:
     col.db.execute(
         """
         UPDATE cards SET type=?, queue=?, due=?, ivl=?, factor=?, reps=?,
-                         lapses=?, left=?, odue=?, odid=?, flags=?, data=?,
-                         mod=?, usn=-1
+                         lapses=?, left=?, odue=?, odid=?, flags=?, data=?, mod=?
         WHERE id=?
         """,
         fields["type"], fields["queue"], fields["due"], fields["ivl"],
         fields["factor"], fields["reps"], fields["lapses"], fields["left"],
         fields["odue"], fields["odid"], fields["flags"], fields["data"], mod, cid,
     )
-    # usn=-1 is essential in dual-sync Anki: it tells native AnkiWeb sync to
-    # upload this scheduling change. Keep mod at the source timestamp so the
-    # next KelmaSync pass still compares equal instead of echoing the pull back.
+    # Do NOT set usn=-1 here. A scheduling pull from KelmaSync is not a local
+    # edit — setting usn=-1 would make AnkiWeb think the user changed these
+    # cards, inflating deck badges and triggering an unwanted AnkiWeb upload.
+    # The explicit "Push client state to AnkiWeb" step marks cards pending.
+    # mod is set to the source timestamp so the next KelmaSync pass sees the
+    # card as up-to-date instead of re-pulling it.
     return cid
 
 

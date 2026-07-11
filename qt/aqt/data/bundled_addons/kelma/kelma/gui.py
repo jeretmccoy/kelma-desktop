@@ -3232,6 +3232,11 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
         cfg2 = config.get()
         cfg2["v2_last_server_time"] = result.server_time
         config.save(cfg2)
+        # Mark the kelma service as synced in the badge state file so pulled
+        # scheduling changes don't appear as local "~n changed" edits.
+        st = state.load()
+        state.mark_synced(st, consts.KELMA, cfg2.get("v2_url", ""))
+        state.save(st)
         msg = (
             f"tombstones {result.tombstones.applied}, "
             f"decks {result.decks.pushed}/{result.decks.pulled}, "
