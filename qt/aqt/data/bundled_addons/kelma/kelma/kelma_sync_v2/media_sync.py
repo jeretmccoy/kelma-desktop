@@ -13,7 +13,7 @@ from typing import Iterable
 
 from anki.collection import Collection
 
-from .client import V2Client
+from .client import V2Client, V2Error
 
 _IMG_RE = re.compile(r'''(?i)<img\b[^>]*\bsrc=["']([^"']+)["']''')
 _SOUND_RE = re.compile(r'''\[sound:([^\]]+)\]''')
@@ -92,7 +92,22 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
             result.skipped += 1
             continue
         path = _safe_media_path(media_dir, filename)
-        path.write_bytes(client.get_media(filename))
+        try:
+            path.write_bytes(client.get_media(filename))
+        except V2Error as err:
+            # The server lists the file but can't serve its bytes (e.g. a
+            # dev-server restart wiped a non-persistent blob store). Don't abort
+            # the whole sync: if we have the file locally, re-upload to heal the
+            # server; otherwise skip it.
+            if err.status == 404:
+                if path.exists() and path.is_file():
+                    import mimetypes as _mt
+                    client.put_media(filename, path.read_bytes(), _mt.guess_type(filename)[0] or "application/octet-stream")
+                    result.uploaded += 1
+                else:
+                    result.skipped += 1
+                continue
+            raise
         local_files.add(filename)
         result.downloaded += 1
 
