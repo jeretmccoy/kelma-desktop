@@ -130,18 +130,24 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
                 pending.add(pool.submit(upload_one, item))
 
     if progress:
-        progress("Media: scanning local media directory…")
-    local_files = {p.name for p in media_dir.iterdir() if p.is_file()}
+        progress("Media: checking server files against local media…")
     server_entries = list(server_manifest.get("media", []) or [])
     total_downloads = len(server_entries)
     for i, entry in enumerate(server_entries, 1):
         if progress and (i == 1 or i == total_downloads or i % 1000 == 0):
             progress(f"Media download check {i}/{total_downloads} · downloaded {result.downloaded}, skipped {result.skipped}")
         filename = entry.get("filename")
-        if not filename or filename in local_files:
+        if not filename:
             result.skipped += 1
             continue
         path = _safe_media_path(media_dir, filename)
+        # Ask the filesystem rather than comparing directory-entry strings.
+        # Default macOS volumes are case-insensitive, so server names such as
+        # But.mp3 and but.mp3 identify the same local file even though Python
+        # string comparison says otherwise.
+        if path.exists() and path.is_file():
+            result.skipped += 1
+            continue
         try:
             path.write_bytes(client.get_media(filename))
         except V2Error as err:
@@ -158,7 +164,6 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
                     result.skipped += 1
                 continue
             raise
-        local_files.add(filename)
         result.downloaded += 1
 
     if progress:
