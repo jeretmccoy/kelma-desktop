@@ -4,10 +4,8 @@ plus integration with the Sync button."""
 from __future__ import annotations
 
 import difflib
-import re
 import sys
 from collections import Counter
-from pathlib import Path
 from concurrent.futures import Future
 from datetime import datetime
 
@@ -85,23 +83,6 @@ _DIFF_PRIORITY = {
     "in-sync": 3,
 }
 
-_MEDIA_IMG_RE = re.compile(r'''(?i)<img\b[^>]*\bsrc=["']([^"']+)["']''')
-_MEDIA_SOUND_RE = re.compile(r'''\[sound:([^\]]+)\]''')
-
-
-def _fmt_gb(nbytes: int) -> str:
-    return f"{nbytes / (1024 ** 3):.2f} GB"
-
-
-def _clean_media_name(name: str) -> str:
-    name = str(name or "").strip().replace("%20", " ")
-    if not name or name.startswith(("http://", "https://", "data:")):
-        return ""
-    if "/" in name or "\\" in name or name in {".", ".."}:
-        return ""
-    return name
-
-
 def _deck_ids_for_names(names: list[str]) -> list[int]:
     wanted = set(names)
     ids: list[int] = []
@@ -111,45 +92,19 @@ def _deck_ids_for_names(names: list[str]) -> list[int]:
     return ids
 
 
-def _referenced_media_bytes_for_decks(deck_names: list[str]) -> int:
+def _collection_counts_for_decks(deck_names: list[str]) -> tuple[int, int]:
+    """Cheap collection size: (distinct notes, cards) for exact selected decks.
+
+    This intentionally avoids scanning note fields/media files so opening the
+    sync menu remains instant.
+    """
     dids = _deck_ids_for_names(deck_names)
     if not dids:
-        return 0
+        return (0, 0)
     marks = ",".join("?" for _ in dids)
-    rows = mw.col.db.all(
-        f"""
-        SELECT DISTINCT n.flds
-        FROM notes n JOIN cards c ON c.nid = n.id
-        WHERE c.did IN ({marks})
-        """,
-        *dids,
-    )
-    names: set[str] = set()
-    for (flds,) in rows:
-        text = str(flds or "")
-        for m in _MEDIA_IMG_RE.finditer(text):
-            clean = _clean_media_name(m.group(1))
-            if clean:
-                names.add(clean)
-        for m in _MEDIA_SOUND_RE.finditer(text):
-            clean = _clean_media_name(m.group(1))
-            if clean:
-                names.add(clean)
-    media_dir = Path(mw.col.media.dir())
-    total = 0
-    for name in names:
-        try:
-            p = (media_dir / name).resolve()
-            root = media_dir.resolve()
-            if (root in p.parents or p == root) and p.is_file():
-                total += p.stat().st_size
-        except Exception:  # noqa: BLE001
-            pass
-    return total
-
-
-def _service_media_bytes(service: str, deck_names: list[str]) -> int:
-    return _referenced_media_bytes_for_decks(config.decks_for_service(service, deck_names))
+    cards = mw.col.db.scalar(f"SELECT COUNT(*) FROM cards WHERE did IN ({marks})", *dids) or 0
+    notes = mw.col.db.scalar(f"SELECT COUNT(DISTINCT nid) FROM cards WHERE did IN ({marks})", *dids) or 0
+    return (int(notes), int(cards))
 
 
 def _esc(text: str) -> str:
@@ -1359,28 +1314,22 @@ class SettingsDialog(QDialog):
             s: state.pending_for_service(mw.col, names, s) for s in consts.SERVICES
         }
         self._deletions = state.pending_deletions(mw.col)
-        self._service_bytes = {s: _service_media_bytes(s, names) for s in config.ui_services()}
-        labels = ["Deck", "KelmaSync", "AnkiWeb"]
-        for s, col in _COL.items():
-            if s in self._service_bytes:
-                labels[col] = f"{consts.SERVICE_LABEL[s]}\n{_fmt_gb(self._service_bytes[s])}"
-        self.table.setHorizontalHeaderLabels(labels)
+        self._service_counts = {
+            s: _collection_counts_for_decks(config.decks_for_service(s, names))
+            for s in config.ui_services()
+        }
+        self.table.setHorizontalHeaderLabels(["Deck", "KelmaSync", "AnkiWeb"])
 
     def _status_text(self, service: str, name: str) -> str:
         added, changed = self._pending.get(service, {}).get(name, (0, 0))
         if not added and not changed:
-            return "in sync"
+            return "✓"
         parts = []
         if added:
             parts.append(f"+{added}")
         if changed:
             parts.append(f"~{changed}")
         return " ".join(parts)
-
-    def _route_cell_text(self, service: str, name: str, checked: bool) -> str:
-        if checked:
-            return f"✓ {self._status_text(service, name)}"
-        return "—"
 
     def _summary_text(self) -> str:
         parts = []
@@ -1393,11 +1342,12 @@ class SettingsDialog(QDialog):
             ndirty = sum(1 for a, c in pend.values() if a or c)
             meta = state.last_sync(s)
             when = _ago(meta["at"]) if meta and meta.get("at") else "never"
-            decks = len(config.decks_for_service(s, getattr(self, "_deck_names", [])))
-            gb = _fmt_gb(getattr(self, "_service_bytes", {}).get(s, 0))
+            routed = config.decks_for_service(s, getattr(self, "_deck_names", []))
+            notes, cards = getattr(self, "_service_counts", {}).get(s, (0, 0))
             parts.append(
-                f"<b>{consts.SERVICE_LABEL[s]}</b>: {decks} deck(s), {gb}; "
-                f"{ndirty} deck(s) pending (+{ta} ~{tc}), synced {when}"
+                f"<b>{consts.SERVICE_LABEL[s]}</b>: {len(routed)} deck(s), "
+                f"{notes} notes / {cards} cards; {ndirty} deck(s) pending "
+                f"(+{ta} ~{tc}), synced {when}"
             )
         if self._deletions:
             parts.append(f"{self._deletions} deletion(s) pending")
@@ -1411,7 +1361,7 @@ class SettingsDialog(QDialog):
             for service, col in _COL.items():
                 item = self.table.item(row, col)
                 checked = item.checkState() == Qt.CheckState.Checked
-                item.setText(self._route_cell_text(service, name, checked))
+                item.setText(self._status_text(service, name) if checked else "")
         self._suppress = False
         self.summary.setText(self._summary_text())
 
@@ -1434,7 +1384,7 @@ class SettingsDialog(QDialog):
                 item.setCheckState(
                     Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
                 )
-                item.setText(self._route_cell_text(service, name, checked))
+                item.setText(self._status_text(service, name) if checked else "")
                 self.table.setItem(row, col, item)
 
     def _apply_filter(self, text: str) -> None:
@@ -1447,13 +1397,12 @@ class SettingsDialog(QDialog):
         col = _COL[service]
         check = Qt.CheckState.Checked if value else Qt.CheckState.Unchecked
         self._suppress = True
-        service = next(s for s, c in _COL.items() if c == col)
         for row in range(self.table.rowCount()):
             if not self.table.isRowHidden(row):
                 item = self.table.item(row, col)
                 item.setCheckState(check)
                 name = self.table.item(row, 0).text()
-                item.setText(self._route_cell_text(service, name, value))
+                item.setText(self._status_text(service, name) if value else "")
         self._suppress = False
         self._anchor[col] = None
 
@@ -1481,10 +1430,10 @@ class SettingsDialog(QDialog):
                 if cell is not None:
                     cell.setCheckState(check)
                     name = self.table.item(r, 0).text()
-                    cell.setText(self._route_cell_text(service, name, checked))
+                    cell.setText(self._status_text(service, name) if checked else "")
             self._suppress = False
         name = self.table.item(row, 0).text()
-        item.setText(self._route_cell_text(service, name, checked))
+        item.setText(self._status_text(service, name) if checked else "")
         self._anchor[col] = row
 
     def _save(self) -> None:
@@ -1538,14 +1487,14 @@ def _service_line_html(service: str, deck_names: list[str], cfg: dict) -> str:
     else:
         service_decks = config.decks_for_service(service, deck_names)
         decks = len(service_decks)
-        gb = _fmt_gb(_referenced_media_bytes_for_decks(service_decks))
+        notes, cards = _collection_counts_for_decks(service_decks)
         user = cfg["kelmasync_user"] if service == consts.KELMA else cfg["ankiweb_user"]
         extra = ""
         if service == consts.KELMA:
             extra = f" · {cfg.get('kelmasync_path', consts.PATH_AUTO)}"
         meta = state.last_sync(service)
         when = _ago(meta["at"]) if meta and meta.get("at") else "never"
-        body = f"{user or '?'} · {decks} decks · {gb}{extra} · synced {when}"
+        body = f"{user or '?'} · {decks} decks · {notes} notes/{cards} cards{extra} · synced {when}"
     accent = branding.accent()
     return (
         f'<span style="color:{accent}; font-weight:bold;">{label}</span>'
@@ -2351,16 +2300,18 @@ def _v2_sync_menu() -> None:
     user = cfg.get("v2_username") or "(no username saved)"
     all_decks = [d.name for d in mw.col.decks.all_names_and_ids()]
     kelma_decks = config.decks_for_service(consts.KELMA, all_decks)
-    ankiweb_decks = config.decks_for_service(consts.ANKIWEB, all_decks)
-    kelma_gb = _fmt_gb(_referenced_media_bytes_for_decks(kelma_decks))
-    ankiweb_gb = _fmt_gb(_referenced_media_bytes_for_decks(ankiweb_decks))
+    kelma_notes, kelma_cards = _collection_counts_for_decks(kelma_decks)
+    scope_line = f"KelmaSync: ✓ {len(kelma_decks)} deck(s), {kelma_notes} notes/{kelma_cards} cards"
+    if not config.kelmasync_only():
+        ankiweb_decks = config.decks_for_service(consts.ANKIWEB, all_decks)
+        aw_notes, aw_cards = _collection_counts_for_decks(ankiweb_decks)
+        scope_line += f" · AnkiWeb: ✓ {len(ankiweb_decks)} deck(s), {aw_notes} notes/{aw_cards} cards"
     active = _v2_active_message()
     active_html = f"<br><span style='color:#d98'>⚠ {active}</span>" if active else ""
     status_label = QLabel(
         f"<b>{status}</b> · {user}<br>"
         f"<span style='color:#888'>{endpoint}</span><br>"
-        f"KelmaSync: ✓ {len(kelma_decks)} deck(s), {kelma_gb} · "
-        f"AnkiWeb: ✓ {len(ankiweb_decks)} deck(s), {ankiweb_gb}"
+        f"{scope_line}"
         f"{active_html}"
     )
     status_wrap = QWidget()
@@ -2374,31 +2325,41 @@ def _v2_sync_menu() -> None:
     menu.addSeparator()
 
     menu.setMinimumWidth(380)
-    act_dual = menu.addAction("Sync KelmaSync + AnkiWeb")
-    act_kelma = menu.addAction("Sync KelmaSync only")
-    act_ankiweb = menu.addAction("Sync AnkiWeb only")
+    if config.kelmasync_only():
+        act_dual = None
+        act_kelma = menu.addAction("Sync KelmaSync")
+        act_ankiweb = None
+    else:
+        act_dual = menu.addAction("Sync KelmaSync + AnkiWeb")
+        act_kelma = menu.addAction("Sync KelmaSync only")
+        act_ankiweb = menu.addAction("Sync AnkiWeb only")
     act_compare = menu.addAction("Compare everything…")
     if _V2_ACTIVE_ACTION:
-        act_dual.setEnabled(False)
+        if act_dual is not None:
+            act_dual.setEnabled(False)
         act_kelma.setEnabled(False)
-        act_ankiweb.setEnabled(False)
+        if act_ankiweb is not None:
+            act_ankiweb.setEnabled(False)
         act_compare.setEnabled(False)
     menu.addSeparator()
-    act_settings = menu.addAction("Settings…")
+    act_settings = menu.addAction("Settings && deck routing…")
+    act_v2_settings = menu.addAction("KelmaSync account/server…")
     act_forget = menu.addAction("Forget login")
 
     chosen = menu.exec(QCursor.pos())
     if chosen is None:
         return
-    if chosen is act_dual:
+    if act_dual is not None and chosen is act_dual:
         _v2_test_sync_notes(also_ankiweb=True)
     elif chosen is act_kelma:
         _v2_test_sync_notes(also_ankiweb=False)
-    elif chosen is act_ankiweb:
+    elif act_ankiweb is not None and chosen is act_ankiweb:
         _v2_run_ankiweb_sync()
     elif chosen is act_compare:
         V2FullDiffDialog(mw).exec()
     elif chosen is act_settings:
+        SettingsDialog(mw).exec()
+    elif chosen is act_v2_settings:
         V2SettingsDialog(mw).exec()
     elif chosen is act_forget:
         _v2_forget_login()
@@ -2515,17 +2476,22 @@ def _build_menu() -> None:
         menu.setIcon(branding.star_icon())
     mw.form.menuTools.addMenu(menu)
 
-    act_sync = QAction("Sync KelmaSync + AnkiWeb", mw)
-    act_sync.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=True))
-    menu.addAction(act_sync)
+    if config.kelmasync_only():
+        act_sync = QAction("Sync KelmaSync", mw)
+        act_sync.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=False))
+        menu.addAction(act_sync)
+    else:
+        act_sync = QAction("Sync KelmaSync + AnkiWeb", mw)
+        act_sync.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=True))
+        menu.addAction(act_sync)
 
-    act_kelma = QAction("Sync KelmaSync only", mw)
-    act_kelma.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=False))
-    menu.addAction(act_kelma)
+        act_kelma = QAction("Sync KelmaSync only", mw)
+        act_kelma.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=False))
+        menu.addAction(act_kelma)
 
-    act_ankiweb = QAction("Sync AnkiWeb only", mw)
-    act_ankiweb.triggered.connect(lambda: _v2_run_ankiweb_sync())
-    menu.addAction(act_ankiweb)
+        act_ankiweb = QAction("Sync AnkiWeb only", mw)
+        act_ankiweb.triggered.connect(lambda: _v2_run_ankiweb_sync())
+        menu.addAction(act_ankiweb)
 
     act_compare = QAction("Compare everything…", mw)
     act_compare.triggered.connect(lambda: V2FullDiffDialog(mw).exec())
@@ -2533,9 +2499,13 @@ def _build_menu() -> None:
 
     menu.addSeparator()
 
-    act_settings = QAction("Settings…", mw)
-    act_settings.triggered.connect(lambda: V2SettingsDialog(mw).exec())
+    act_settings = QAction("Settings && deck routing…", mw)
+    act_settings.triggered.connect(lambda: SettingsDialog(mw).exec())
     menu.addAction(act_settings)
+
+    act_v2_settings = QAction("KelmaSync account/server…", mw)
+    act_v2_settings.triggered.connect(lambda: V2SettingsDialog(mw).exec())
+    menu.addAction(act_v2_settings)
 
     act_logout = QAction("Forget login", mw)
     act_logout.triggered.connect(_v2_forget_login)
