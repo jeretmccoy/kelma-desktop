@@ -1623,6 +1623,11 @@ def _ensure_v2_vendor() -> None:
     sys.modules["kelma_sync_v2"] = vendored
 
 
+def _v2_kelma_deck_names() -> list[str]:
+    names = [d.name for d in mw.col.decks.all_names_and_ids()]
+    return config.decks_for_service(consts.KELMA, names)
+
+
 def _v2_client_or_login():
     """Return a V2Client, prompting for credentials if no token is saved."""
     try:
@@ -1805,12 +1810,19 @@ class V2FullDiffDialog(QDialog):
                 p("Not logged in. Open the sync menu → Settings to log in.")
                 return
             self._client = client
+            deck_names = _v2_kelma_deck_names()
+            if not deck_names:
+                p("No decks are picked for KelmaSync. Open Settings → deck routing and tick KelmaSync for at least one deck.")
+                return
+            p(f"Scope: {len(deck_names)} KelmaSync deck(s)")
 
             import time as _t
             try:
                 p("Contacting server…")
                 t0 = _t.time()
                 server = client.manifest()
+                from kelma_sync_v2.content_sync import _scope_server_manifest_to_decks
+                server = _scope_server_manifest_to_decks(client, server, deck_names, progress=p)
             except Exception as err:  # noqa: BLE001
                 p(f"⚠ Server fetch failed: {err}")
                 tooltip(f"KelmaSync compare: server fetch failed: {err}")
@@ -1824,7 +1836,7 @@ class V2FullDiffDialog(QDialog):
 
             try:
                 from kelma_sync_v2 import anki_local
-                local = anki_local.local_manifest(mw.col, progress=p)
+                local = anki_local.local_manifest(mw.col, deck_names=deck_names, progress=p)
             except Exception as err:  # noqa: BLE001
                 p(f"⚠ Reading local collection failed: {err}")
                 tooltip(f"KelmaSync compare: local read failed: {err}")
@@ -2298,6 +2310,10 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
     if blocked:
         tooltip(f"KelmaSync: {blocked}")
         return
+    deck_names = _v2_kelma_deck_names()
+    if not deck_names:
+        tooltip("KelmaSync: no decks are picked for KelmaSync. Open Settings → deck routing.")
+        return
     client = _v2_client_or_login()
     if client is None:
         return
@@ -2313,15 +2329,15 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
     dlg = V2SyncProgressDialog(mw)
     dlg.show()
     if also_ankiweb:
-        dlg.progress("Dual sync queued: KelmaSync first, then AnkiWeb.")
+        dlg.progress(f"Dual sync queued: {len(deck_names)} KelmaSync deck(s) first, then AnkiWeb.")
         tooltip("KelmaSync + AnkiWeb: syncing… progress window opened.")
     else:
-        dlg.progress("KelmaSync queued. Waiting for Anki collection worker…")
+        dlg.progress(f"KelmaSync queued for {len(deck_names)} picked deck(s). Waiting for Anki collection worker…")
         tooltip("KelmaSync: syncing… progress window opened.")
 
     def _work():
         dlg.progress("Worker started.")
-        return sync_content_once(mw.col, client, since=since, progress=dlg.progress)
+        return sync_content_once(mw.col, client, since=since, deck_names=deck_names, progress=dlg.progress)
 
     def _done(future: Future) -> None:
         global _V2_ACTIVE_ACTION

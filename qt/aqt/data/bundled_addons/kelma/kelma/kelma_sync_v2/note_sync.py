@@ -38,6 +38,7 @@ def sync_notes_once(
     since: str | None = None,
     apply_pulls: bool = True,
     deck_name: str | None = None,
+    deck_names: list[str] | None = None,
     server_manifest: dict[str, Any] | None = None,
     progress=None,
 ) -> NoteSyncResult:
@@ -55,7 +56,9 @@ def sync_notes_once(
     """
     if progress:
         progress("Notes: building local note manifest…")
-    local_manifest = {x["guid"]: x for x in anki_local.note_manifest(col, deck_name=deck_name, progress=progress)}
+    if deck_name and not deck_names:
+        deck_names = [deck_name]
+    local_manifest = {x["guid"]: x for x in anki_local.note_manifest(col, deck_names=deck_names, progress=progress)}
     if server_manifest is None:
         if progress:
             progress("Notes: fetching full server manifest for checksum comparison…")

@@ -23,10 +23,10 @@ class DeckSyncConflict(RuntimeError):
         self.conflicts = conflicts
 
 
-def sync_decks_once(col: Collection, client: V2Client, server_manifest: dict[str, Any] | None = None, progress=None) -> DeckSyncResult:
+def sync_decks_once(col: Collection, client: V2Client, server_manifest: dict[str, Any] | None = None, progress=None, deck_names: list[str] | None = None) -> DeckSyncResult:
     if progress:
         progress("Decks: building local deck manifest…")
-    local = {x["name"]: x for x in anki_local.deck_manifest(col)}
+    local = {x["name"]: x for x in anki_local.deck_manifest(col, deck_names=deck_names)}
     if server_manifest is None:
         server_manifest = client.manifest()
     server = {x["name"]: x for x in server_manifest.get("decks", [])}

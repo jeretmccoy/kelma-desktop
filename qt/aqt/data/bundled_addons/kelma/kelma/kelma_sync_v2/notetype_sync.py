@@ -35,10 +35,11 @@ def sync_notetypes_once(
     *,
     apply_pulls: bool = True,
     progress=None,
+    notetype_ids: set[int] | None = None,
 ) -> NotetypeSyncResult:
     if progress:
         progress("Notetypes: building local notetype manifest…")
-    local = {str(x["notetype_id"]): x for x in anki_local.notetype_manifest(col)}
+    local = {str(x["notetype_id"]): x for x in anki_local.notetype_manifest(col, notetype_ids=notetype_ids)}
     if server_manifest is None:
         server_manifest = client.manifest()
     server = {str(x["notetype_id"]): x for x in server_manifest.get("notetypes", [])}

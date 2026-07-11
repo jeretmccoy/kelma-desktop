@@ -26,10 +26,10 @@ class CardSyncConflict(RuntimeError):
         self.conflicts = conflicts
 
 
-def sync_cards_once(col: Collection, client: V2Client, server_manifest: dict | None = None, progress=None) -> CardSyncResult:
+def sync_cards_once(col: Collection, client: V2Client, server_manifest: dict | None = None, progress=None, deck_names: list[str] | None = None) -> CardSyncResult:
     if progress:
         progress("Cards: building local card manifest…")
-    local = {str(x["card_id"]): x for x in anki_local.card_manifest(col)}
+    local = {str(x["card_id"]): x for x in anki_local.card_manifest(col, deck_names=deck_names)}
     if server_manifest is None:
         server_manifest = client.manifest()
     server = {str(x["card_id"]): x for x in server_manifest.get("cards", [])}

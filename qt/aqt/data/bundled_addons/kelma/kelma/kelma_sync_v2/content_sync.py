@@ -35,6 +35,47 @@ class ContentSyncConflict(RuntimeError):
         self.conflicts = conflicts
 
 
+def _chunks(xs: list, n: int = 1000):
+    for i in range(0, len(xs), n):
+        yield xs[i:i + n]
+
+
+def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], deck_names: list[str], progress=None) -> dict[str, Any]:
+    """Filter server manifest to the deck picker scope.
+
+    Server note manifest entries don't include deck membership, so derive scope
+    from full server cards (card -> deck_name + note_guid), then keep only notes
+    referenced by scoped cards.
+    """
+    allowed = set(deck_names)
+    card_ids = [int(c["card_id"]) for c in manifest.get("cards", []) if c.get("card_id")]
+    scoped_card_ids: set[int] = set()
+    scoped_note_guids: set[str] = set()
+    if card_ids:
+        if progress:
+            progress(f"Server scope: checking {len(card_ids)} card deck assignments…")
+        done = 0
+        for chunk in _chunks(card_ids):
+            pulled = client.batch_pull(cards=chunk).get("cards", [])
+            for c in pulled:
+                deck = str(c.get("deck_name", ""))
+                if deck in allowed:
+                    scoped_card_ids.add(int(c.get("card_id")))
+                    guid = c.get("note_guid")
+                    if guid:
+                        scoped_note_guids.add(str(guid))
+            done += len(chunk)
+            if progress:
+                progress(f"Server scope: {done}/{len(card_ids)} cards checked · {len(scoped_card_ids)} in Kelma decks")
+    scoped = dict(manifest)
+    scoped["cards"] = [c for c in manifest.get("cards", []) if int(c.get("card_id", 0)) in scoped_card_ids]
+    scoped["notes"] = [n for n in manifest.get("notes", []) if str(n.get("guid", "")) in scoped_note_guids]
+    scoped["decks"] = [d for d in manifest.get("decks", []) if str(d.get("name", "")) in allowed]
+    # Keep notetypes broad enough for pulled scoped notes; local notetypes are
+    # independently restricted to selected local notes.
+    return scoped
+
+
 def _push_local_deletes(col: Collection, client: V2Client, deletes: dict[str, list[str]], progress=None) -> None:
     """Push DELETE for resources that were removed locally since last sync."""
     total = sum(len(v) for v in deletes.values())
@@ -68,6 +109,7 @@ def sync_content_once(
     *,
     since: str | None = None,
     deck_name: str | None = None,
+    deck_names: list[str] | None = None,
     apply_note_pulls: bool = True,
     progress=None,
 ) -> ContentSyncResult:
@@ -86,6 +128,12 @@ def sync_content_once(
     # needless re-sends even when checksums match. Incremental sync can only be
     # reintroduced after the local snapshot stores checksums per resource.
     manifest = client.manifest()
+    if deck_name and not deck_names:
+        deck_names = [deck_name]
+    if deck_names is not None:
+        if progress:
+            progress(f"Scoping server manifest to {len(deck_names)} Kelma deck(s)…")
+        manifest = _scope_server_manifest_to_decks(client, manifest, deck_names, progress=progress)
     if progress:
         progress(
             f"Server manifest: {len(manifest.get('notes', []))} notes, "
@@ -103,16 +151,17 @@ def sync_content_once(
     snapshot = sync_state.load_state(col)
     if progress:
         progress("Phase 4/9: building local key snapshot…")
-    local_note_manifest = anki_local.note_manifest(col, progress=progress)
+    local_note_manifest = anki_local.note_manifest(col, deck_names=deck_names, progress=progress)
     if progress:
         progress(f"Snapshot: {len(local_note_manifest)} local notes")
-    local_card_manifest = anki_local.card_manifest(col)
+    local_card_manifest = anki_local.card_manifest(col, deck_names=deck_names)
     if progress:
         progress(f"Snapshot: {len(local_card_manifest)} local cards")
-    local_notetype_manifest = anki_local.notetype_manifest(col)
+    used_notetype_ids = {int(n["notetype_id"]) for n in local_note_manifest}
+    local_notetype_manifest = anki_local.notetype_manifest(col, notetype_ids=used_notetype_ids if deck_names is not None else None)
     if progress:
         progress(f"Snapshot: {len(local_notetype_manifest)} local notetypes")
-    local_deck_manifest = anki_local.deck_manifest(col)
+    local_deck_manifest = anki_local.deck_manifest(col, deck_names=deck_names)
     if progress:
         progress(f"Snapshot: {len(local_deck_manifest)} local decks")
     local_keys = {
@@ -137,13 +186,13 @@ def sync_content_once(
     try:
         if progress:
             progress("Phase 6/9: syncing decks…")
-        result.decks = sync_decks_once(col, client, manifest, progress=progress)
+        result.decks = sync_decks_once(col, client, manifest, progress=progress, deck_names=deck_names)
     except DeckSyncConflict as e:
         raise ContentSyncConflict("deck", e.conflicts) from e
     try:
         if progress:
             progress("Phase 7/9: syncing notetypes…")
-        result.notetypes = sync_notetypes_once(col, client, manifest, apply_pulls=True, progress=progress)
+        result.notetypes = sync_notetypes_once(col, client, manifest, apply_pulls=True, progress=progress, notetype_ids=used_notetype_ids if deck_names is not None else None)
     except NotetypeSyncConflict as e:
         raise ContentSyncConflict("notetype", e.conflicts) from e
     try:
@@ -155,6 +204,7 @@ def sync_content_once(
             since=since,
             apply_pulls=apply_note_pulls,
             deck_name=deck_name,
+            deck_names=deck_names,
             server_manifest=manifest,
             progress=progress,
         )
@@ -163,7 +213,7 @@ def sync_content_once(
     if progress:
         progress("Phase 9/9: syncing cards…")
     try:
-        result.cards = sync_cards_once(col, client, manifest, progress=progress)
+        result.cards = sync_cards_once(col, client, manifest, progress=progress, deck_names=deck_names)
     except CardSyncConflict as e:
         raise ContentSyncConflict("card", e.conflicts) from e
     if progress:

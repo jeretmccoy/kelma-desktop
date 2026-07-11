@@ -46,13 +46,15 @@ def note_record(col: Collection, guid: str) -> dict[str, Any] | None:
     }
 
 
-def note_manifest(col: Collection, deck_name: str | None = None, progress=None) -> list[dict[str, Any]]:
-    """Return note manifest, optionally restricted to notes with cards in deck_name."""
+def note_manifest(col: Collection, deck_name: str | None = None, deck_names: list[str] | None = None, progress=None) -> list[dict[str, Any]]:
+    """Return note manifest, optionally restricted to Kelma-routed decks."""
     if progress:
         progress("Reading local notes…")
     out: list[dict[str, Any]] = []
-    if deck_name:
-        dids = _deck_ids_for_name(col, deck_name)
+    if deck_name and not deck_names:
+        deck_names = [deck_name]
+    if deck_names:
+        dids = _deck_ids_for_names(col, deck_names)
         if not dids:
             return []
         marks = ",".join("?" for _ in dids)
@@ -132,15 +134,25 @@ def card_record(col: Collection, card_id: int) -> dict[str, Any] | None:
     }
 
 
-def card_manifest(col: Collection) -> list[dict[str, Any]]:
+def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[dict[str, Any]]:
     out = []
+    dids = _deck_ids_for_names(col, deck_names or []) if deck_names else []
+    where = ""
+    params: list[int] = []
+    if deck_names:
+        if not dids:
+            return []
+        where = "WHERE c.did IN (" + ",".join("?" for _ in dids) + ")"
+        params = dids
     rows = col.db.all(
-        """
+        f"""
         SELECT c.id, c.did, c.ord, c.mod, c.type, c.queue, c.due,
                c.ivl, c.factor, c.reps, c.lapses, c.left, c.odue, c.odid,
                c.flags, c.data, n.guid
         FROM cards c JOIN notes n ON n.id = c.nid
-        """
+        {where}
+        """,
+        *params,
     )
     deck_names: dict[int, str] = {}
     for cid, did, ord_, mod, typ, queue, due, ivl, factor, reps, lapses, left, odue, odid, flags, data, guid in rows:
@@ -179,10 +191,13 @@ def deck_record(col: Collection, name: str) -> dict[str, Any] | None:
     }
 
 
-def deck_manifest(col: Collection) -> list[dict[str, Any]]:
+def deck_manifest(col: Collection, deck_names: list[str] | None = None) -> list[dict[str, Any]]:
     out = []
+    allowed = set(deck_names or [])
     for deck in col.decks.all():
         name = deck.get("name", "")
+        if deck_names and name not in allowed:
+            continue
         cfg = dict(deck)
         cfg.pop("name", None)
         out.append({
@@ -208,10 +223,12 @@ def notetype_record(col: Collection, notetype_id: int) -> dict[str, Any] | None:
     }
 
 
-def notetype_manifest(col: Collection) -> list[dict[str, Any]]:
+def notetype_manifest(col: Collection, notetype_ids: set[int] | None = None) -> list[dict[str, Any]]:
     out = []
     for nt in col.models.all():
         ntid = int(nt.get("id", 0))
+        if notetype_ids is not None and ntid not in notetype_ids:
+            continue
         name = nt.get("name", str(ntid))
         definition = dict(nt)
         out.append({
@@ -222,17 +239,20 @@ def notetype_manifest(col: Collection) -> list[dict[str, Any]]:
     return out
 
 
-def local_manifest(col: Collection, deck_name: str | None = None, progress=None) -> dict[str, Any]:
-    notes = note_manifest(col, deck_name=deck_name, progress=progress)
+def local_manifest(col: Collection, deck_name: str | None = None, deck_names: list[str] | None = None, progress=None) -> dict[str, Any]:
+    if deck_name and not deck_names:
+        deck_names = [deck_name]
+    notes = note_manifest(col, deck_names=deck_names, progress=progress)
+    used_notetypes = {int(n["notetype_id"]) for n in notes}
     if progress:
         progress("Reading local cards…")
-    cards = card_manifest(col)
+    cards = card_manifest(col, deck_names=deck_names)
     if progress:
         progress(f"Read {len(cards)} cards · reading notetypes…")
-    notetypes = notetype_manifest(col)
+    notetypes = notetype_manifest(col, notetype_ids=used_notetypes if deck_names is not None else None)
     if progress:
         progress(f"Read {len(notetypes)} notetypes · reading decks…")
-    decks = deck_manifest(col)
+    decks = deck_manifest(col, deck_names=deck_names)
     if progress:
         progress(f"Read {len(decks)} decks")
     return {
@@ -244,9 +264,15 @@ def local_manifest(col: Collection, deck_name: str | None = None, progress=None)
 
 
 def _deck_ids_for_name(col: Collection, name: str) -> list[int]:
+    return _deck_ids_for_names(col, [name])
+
+
+def _deck_ids_for_names(col: Collection, names: list[str]) -> list[int]:
+    wanted = set(names)
     ids: list[int] = []
     for deck in col.decks.all():
-        if deck.get("name") == name or str(deck.get("name", "")).startswith(name + "::"):
+        dname = str(deck.get("name", ""))
+        if dname in wanted or any(dname.startswith(name + "::") for name in wanted):
             try:
                 ids.append(int(deck.get("id")))
             except Exception:
