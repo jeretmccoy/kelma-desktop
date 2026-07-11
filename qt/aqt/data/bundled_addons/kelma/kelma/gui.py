@@ -6,7 +6,9 @@ from __future__ import annotations
 import difflib
 import json
 import re
+import shutil
 import sys
+import tempfile
 import time
 from collections import Counter
 from concurrent.futures import Future
@@ -2760,8 +2762,8 @@ def _stage_push_ankiweb() -> None:
     mw.taskman.run_in_background(mark_work, marked, uses_collection=True)
 
 
-def _v2_sync_menu() -> None:
-    """Explicit staged sync menu shown from the Anki Sync button.
+def _v2_old_staged_menu() -> None:
+    """Deprecated multi-step menu retained only for compatibility.
 
     This restores the old interaction pattern (click Sync → Kelma menu appears)
     while keeping all actions on the v2 path.
@@ -2867,6 +2869,289 @@ def _v2_sync_menu() -> None:
         V2SettingsDialog(mw).exec()
     elif chosen is act_forget:
         _v2_forget_login()
+
+
+class V2JointStateDialog(QDialog):
+    """One workspace for fetching, choosing, and publishing all sync sources."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("KelmaSync · Joint state")
+        self.resize(1120, 700)
+        self._client = _v2_client_or_login()
+        self._temp_dir: str | None = None
+        self._sources: dict[str, dict[str, dict]] = {}
+        self._rows: list[tuple[str, str]] = []
+        self._choices: list[QComboBox] = []
+        self._deck_names = _v2_kelma_deck_names()
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Fetching current client, AnkiWeb, and KelmaSync independently. "
+            "Choose the desired client value for each difference, apply it locally, "
+            "then publish that client state to both services."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.status = QLabel("Waiting to fetch sources…")
+        layout.addWidget(self.status)
+
+        source_buttons = QHBoxLayout()
+        for text, source in (("Choose Client for all", "Client"),
+                             ("Choose AnkiWeb for all", "AnkiWeb"),
+                             ("Choose KelmaSync for all", "KelmaSync")):
+            button = QPushButton(text)
+            button.clicked.connect(lambda _=False, s=source: self._choose_all(s))
+            source_buttons.addWidget(button)
+        source_buttons.addStretch()
+        layout.addLayout(source_buttons)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Resource / key", "Client", "AnkiWeb", "KelmaSync", "Desired client state"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        for col in (1, 2, 3):
+            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.table)
+
+        actions = QHBoxLayout()
+        self.apply_btn = QPushButton("Apply choices to client")
+        self.apply_btn.clicked.connect(self._apply)
+        self.push_kelma_btn = QPushButton("Push client state to KelmaSync")
+        self.push_kelma_btn.clicked.connect(self._push_kelma)
+        self.push_anki_btn = QPushButton("Push client state to AnkiWeb")
+        self.push_anki_btn.clicked.connect(self._push_ankiweb)
+        self.push_kelma_btn.setEnabled(False)
+        self.push_anki_btn.setEnabled(False)
+        actions.addWidget(self.apply_btn)
+        actions.addWidget(self.push_kelma_btn)
+        actions.addWidget(self.push_anki_btn)
+        actions.addStretch()
+        close = QPushButton("Close")
+        close.clicked.connect(self.reject)
+        actions.addWidget(close)
+        layout.addLayout(actions)
+
+        if self._client is None or not self._deck_names:
+            self.status.setText("Sign in and select at least one KelmaSync deck first.")
+            self.apply_btn.setEnabled(False)
+        else:
+            self._fetch()
+
+    def reject(self) -> None:
+        if self._temp_dir:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+        super().reject()
+
+    @staticmethod
+    def _fingerprint(resource: str, item: dict | None):
+        if item is None:
+            return None
+        if resource == "cards":
+            sched = dict(item.get("scheduling") or {})
+            queue = int(sched.get("queue", 0) or 0)
+            due = int(sched.get("due", 0) or 0)
+            odue = int(sched.get("odue", 0) or 0)
+            crt_day = int(sched.get("_crt", 0) or 0) // 86400
+            if queue in (2, 3) and crt_day:
+                due += crt_day
+                if int(sched.get("odid", 0) or 0):
+                    odue += crt_day
+            scheduling = (
+                int(sched.get("type", 0) or 0), queue, due,
+                int(sched.get("ivl", 0) or 0), int(sched.get("factor", 0) or 0),
+                int(sched.get("reps", 0) or 0), int(sched.get("lapses", 0) or 0),
+                int(sched.get("left", 0) or 0), odue, int(sched.get("flags", 0) or 0),
+            )
+            return (item.get("checksum"), scheduling)
+        return item.get("checksum")
+
+    @staticmethod
+    def _key(resource: str, item: dict) -> str:
+        field = {"notes": "guid", "cards": "logical_key", "notetypes": "notetype_id", "decks": "name"}[resource]
+        if resource == "cards":
+            return str(item.get(field) or f"{item.get('note_guid', '')}:{int(item.get('ord', 0) or 0)}")
+        return str(item.get(field, ""))
+
+    def _fetch(self) -> None:
+        self.apply_btn.setEnabled(False)
+        self.status.setText("Downloading AnkiWeb into a temporary collection…")
+        client = self._client
+        deck_names = self._deck_names
+        auth = mw.pm.sync_auth()
+        if not auth:
+            self.status.setText("AnkiWeb login is required.")
+            return
+
+        def work():
+            from anki.collection import Collection
+            from kelma_sync_v2 import anki_local
+            from kelma_sync_v2.content_sync import _scope_server_manifest_to_decks
+
+            temp_dir = tempfile.mkdtemp(prefix="kelma-joint-state-")
+            temp_path = str(Path(temp_dir) / "collection.anki2")
+            remote = Collection(temp_path)
+            remote_auth = type(auth)()
+            remote_auth.CopyFrom(auth)
+            handshake = remote.sync_collection(remote_auth, False)
+            if handshake.new_endpoint:
+                remote_auth.endpoint = handshake.new_endpoint
+            remote.close_for_full_sync()
+            remote.full_upload_or_download(
+                auth=remote_auth,
+                server_usn=handshake.server_media_usn,
+                upload=False,
+            )
+            remote.reopen(after_full_sync=True)
+            ankiweb = anki_local.local_manifest(remote, deck_names=deck_names)
+            remote.close()
+            local = anki_local.local_manifest(mw.col, deck_names=deck_names)
+            kelma = _scope_server_manifest_to_decks(client, client.manifest(), deck_names)
+            return temp_dir, local, ankiweb, kelma
+
+        def done(future: Future) -> None:
+            try:
+                self._temp_dir, local, ankiweb, kelma = future.result()
+            except Exception as err:  # noqa: BLE001
+                self.status.setText(f"Source fetch failed: {err}")
+                return
+            for resource in ("notes", "cards", "notetypes", "decks"):
+                self._sources[resource] = {}
+                for name, manifest in (("Client", local), ("AnkiWeb", ankiweb), ("KelmaSync", kelma)):
+                    self._sources[resource][name] = {
+                        self._key(resource, item): item for item in manifest.get(resource, [])
+                    }
+            self._populate()
+
+        mw.taskman.run_in_background(work, done, uses_collection=True)
+
+    def _preview(self, resource: str, item: dict | None) -> str:
+        if item is None:
+            return "(missing)"
+        if resource == "notes":
+            return f"checksum {str(item.get('checksum', ''))[:10]} · {item.get('modified_at', '')}"
+        if resource == "cards":
+            sched = item.get("scheduling") or {}
+            return (
+                f"{item.get('deck_name', '')} · queue {sched.get('queue', 0)} · "
+                f"due {sched.get('due', 0)} · interval {sched.get('ivl', 0)} · reps {sched.get('reps', 0)}"
+            )
+        return f"checksum {str(item.get('checksum', ''))[:10]} · {item.get('modified_at', '')}"
+
+    def _populate(self) -> None:
+        self._rows.clear()
+        self._choices.clear()
+        rows = []
+        for resource in ("notes", "cards", "notetypes", "decks"):
+            maps = self._sources[resource]
+            for key in sorted(set().union(*(set(m) for m in maps.values()))):
+                values = {name: maps[name].get(key) for name in ("Client", "AnkiWeb", "KelmaSync")}
+                fingerprints = {self._fingerprint(resource, value) for value in values.values()}
+                if len(fingerprints) > 1:
+                    rows.append((resource, key, values))
+        self.table.setRowCount(len(rows))
+        for row, (resource, key, values) in enumerate(rows):
+            self._rows.append((resource, key))
+            self.table.setItem(row, 0, QTableWidgetItem(f"{resource[:-1]} · {key}"))
+            for col, source in enumerate(("Client", "AnkiWeb", "KelmaSync"), 1):
+                self.table.setItem(row, col, QTableWidgetItem(self._preview(resource, values[source])))
+            choice = QComboBox()
+            choice.addItems(["Client", "AnkiWeb", "KelmaSync"])
+            choice.setCurrentText("Client")
+            self.table.setCellWidget(row, 4, choice)
+            self._choices.append(choice)
+        self.status.setText(f"All sources fetched independently · {len(rows)} difference(s) require a client-state decision.")
+        self.apply_btn.setEnabled(True)
+
+    def _choose_all(self, source: str) -> None:
+        for choice in self._choices:
+            choice.setCurrentText(source)
+
+    def _apply(self) -> None:
+        decisions = [(resource, key, self._choices[i].currentText()) for i, (resource, key) in enumerate(self._rows)]
+        client = self._client
+        temp_path = str(Path(self._temp_dir or "") / "collection.anki2")
+        self.apply_btn.setEnabled(False)
+        self.status.setText("Applying chosen joint state to the client…")
+
+        def work():
+            from anki.collection import Collection
+            from kelma_sync_v2 import anki_apply, anki_local
+            remote = Collection(temp_path)
+            for resource, key, source in decisions:
+                if source == "Client":
+                    continue
+                item = self._sources[resource][source].get(key)
+                if item is None:
+                    if resource == "notes": anki_apply.delete_note(mw.col, key)
+                    elif resource == "decks": anki_apply.delete_deck(mw.col, key)
+                    elif resource == "cards":
+                        local = self._sources[resource]["Client"].get(key) or {}
+                        if local.get("card_id"): anki_apply.delete_card(mw.col, int(local["card_id"]))
+                    continue
+                if source == "KelmaSync":
+                    if resource == "notes": record = client.get_note(key)
+                    elif resource == "cards": record = client.get_card(int(item["card_id"]))
+                    elif resource == "notetypes": record = client.get_notetype(int(key))
+                    else: record = client.get_deck(key)
+                else:
+                    if resource == "notes": record = anki_local.note_record(remote, key)
+                    elif resource == "cards": record = anki_local.card_record(remote, int(item["card_id"]))
+                    elif resource == "notetypes": record = anki_local.notetype_record(remote, int(key))
+                    else: record = anki_local.deck_record(remote, key)
+                if resource == "notes": anki_apply.apply_note(mw.col, record)
+                elif resource == "cards": anki_apply.apply_card(mw.col, record)
+                elif resource == "notetypes": anki_apply.apply_notetype(mw.col, record)
+                else: anki_apply.apply_deck(mw.col, record)
+            remote.close()
+            return len(decisions)
+
+        def done(future: Future) -> None:
+            try: count = future.result()
+            except Exception as err:  # noqa: BLE001
+                self.status.setText(f"Could not apply client state: {err}")
+                self.apply_btn.setEnabled(True)
+                return
+            self.status.setText(f"Client state decided ({count} differences processed). Push it to both services below.")
+            self.push_kelma_btn.setEnabled(True)
+            self.push_anki_btn.setEnabled(True)
+
+        mw.taskman.run_in_background(work, done, uses_collection=True)
+
+    def _push_kelma(self) -> None:
+        self.status.setText("Pushing chosen client state to KelmaSync…")
+        self.push_kelma_btn.setEnabled(False)
+        def work():
+            from kelma_sync_v2.canonical_sync import push_client_state
+            return push_client_state(mw.col, self._client, deck_names=self._deck_names)
+        def done(future: Future) -> None:
+            try: totals = future.result()
+            except Exception as err: self.status.setText(f"KelmaSync push failed: {err}"); self.push_kelma_btn.setEnabled(True); return
+            self.status.setText("Client state pushed to KelmaSync. Now push to AnkiWeb.")
+        mw.taskman.run_in_background(work, done, uses_collection=True)
+
+    def _push_ankiweb(self) -> None:
+        self.status.setText("Preparing chosen client state for AnkiWeb…")
+        self.push_anki_btn.setEnabled(False)
+        def work():
+            from kelma_sync_v2.canonical_sync import mark_client_state_for_ankiweb
+            return mark_client_state_for_ankiweb(mw.col, self._deck_names)
+        def marked(future: Future) -> None:
+            try: future.result()
+            except Exception as err: self.status.setText(f"AnkiWeb preparation failed: {err}"); self.push_anki_btn.setEnabled(True); return
+            def synced(ok: bool, text: str) -> None:
+                self.status.setText("Client state pushed to AnkiWeb." if ok else f"AnkiWeb push failed: {text}")
+                self.push_anki_btn.setEnabled(not ok)
+            _v2_run_ankiweb_sync(done=synced)
+        mw.taskman.run_in_background(work, marked, uses_collection=True)
+
+
+def _v2_sync_menu() -> None:
+    """Open the single joint-state workspace from Anki's Sync button."""
+    if _V2_ACTIVE_ACTION:
+        tooltip(_v2_active_message() or "A sync operation is already running.")
+        return
+    V2JointStateDialog(mw).exec()
 
 
 def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:

@@ -237,6 +237,7 @@ def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[
             "ivl": int(ivl or 0), "factor": int(factor or 0), "reps": int(reps or 0),
             "lapses": int(lapses or 0), "left": int(left or 0), "odue": int(odue or 0),
             "odid": int(odid or 0), "flags": int(flags or 0), "data": data or "",
+            "_crt": int(col.crt),
         }
         out.append({
             "card_id": int(cid),
@@ -245,6 +246,7 @@ def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[
             "deck_name": deck_name,
             "logical_key": f"{guid or ''}:{int(ord_ or 0)}",
             "checksum": card_checksum(guid or "", deck_name, int(ord_ or 0), scheduling),
+            "scheduling": scheduling,
             "modified_at": iso_from_anki_mod(int(mod or 0)),
         })
     return out

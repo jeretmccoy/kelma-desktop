@@ -83,6 +83,7 @@ def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], 
                     m["note_guid"] = c.get("note_guid") or ""
                     m["ord"] = int(c.get("ord") or 0)
                     m["deck_name"] = c.get("deck_name") or ""
+                    m["scheduling"] = dict(c.get("scheduling") or {})
                     m["logical_key"] = f"{m['note_guid']}:{m['ord']}"
             done += len(chunk)
             if progress:
