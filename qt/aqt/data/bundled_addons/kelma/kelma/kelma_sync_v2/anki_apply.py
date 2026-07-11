@@ -6,6 +6,8 @@ non-conflicting pull path.
 """
 from __future__ import annotations
 
+from datetime import datetime
+import time
 from typing import Any
 
 from anki.collection import Collection
@@ -85,19 +87,25 @@ def apply_card(col: Collection, record: dict[str, Any]) -> int:
         "flags": int(sched.get("flags", 0) or 0),
         "data": sched.get("data", "") or "",
     }
+    modified_at = record.get("client_modified_at") or record.get("modified_at")
+    try:
+        mod = int(datetime.fromisoformat(str(modified_at).replace("Z", "+00:00")).timestamp())
+    except Exception:
+        mod = int(time.time())
     col.db.execute(
         """
         UPDATE cards SET type=?, queue=?, due=?, ivl=?, factor=?, reps=?,
-                         lapses=?, left=?, odue=?, odid=?, flags=?, data=?
+                         lapses=?, left=?, odue=?, odid=?, flags=?, data=?,
+                         mod=?, usn=-1
         WHERE id=?
         """,
         fields["type"], fields["queue"], fields["due"], fields["ivl"],
         fields["factor"], fields["reps"], fields["lapses"], fields["left"],
-        fields["odue"], fields["odid"], fields["flags"], fields["data"], cid,
+        fields["odue"], fields["odid"], fields["flags"], fields["data"], mod, cid,
     )
-    # Current Anki observes direct scheduling updates without an explicit queue
-    # flush. `flush_scheduler()` never existed here; calling it previously
-    # raised after every pull and caused valid server scheduling to be skipped.
+    # usn=-1 is essential in dual-sync Anki: it tells native AnkiWeb sync to
+    # upload this scheduling change. Keep mod at the source timestamp so the
+    # next KelmaSync pass still compares equal instead of echoing the pull back.
     return cid
 
 
