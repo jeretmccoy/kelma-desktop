@@ -47,6 +47,8 @@ _V2_ACTIVE_ACTION: str | None = None
 def _v2_active_message() -> str | None:
     if _V2_ACTIVE_ACTION == "sync":
         return "A KelmaSync sync is already running. Please wait for its completion toast, then compare."
+    if _V2_ACTIVE_ACTION == "ankiweb":
+        return "AnkiWeb sync is already running. Please wait for it to finish."
     if _V2_ACTIVE_ACTION == "compare":
         return "A KelmaSync compare is already running. Please wait for it to finish."
     return None
@@ -2101,6 +2103,52 @@ class V2CompareDialog(QDialog):
         mw.taskman.run_in_background(work, done, uses_collection=True)
 
 
+def _v2_run_ankiweb_sync(progress=None, done=None) -> None:
+    """Run native AnkiWeb sync with a completion callback when auth exists.
+
+    If the user is not logged into AnkiWeb, fall back to Anki's original sync
+    button behavior so it can show the login UI.
+    """
+    global _V2_ACTIVE_ACTION
+    blocked = _v2_active_message()
+    if blocked and _V2_ACTIVE_ACTION != "sync":
+        tooltip(f"KelmaSync: {blocked}")
+        return
+    if progress:
+        progress("AnkiWeb: starting native sync…")
+    if not getattr(mw, "pm", None) or not mw.pm.sync_auth():
+        if _V2_ACTIVE_ACTION in ("sync", "ankiweb"):
+            _V2_ACTIVE_ACTION = None
+        if progress:
+            progress("AnkiWeb: login required; opening native Anki sync/login…")
+        if done:
+            done(False, "AnkiWeb login required; native sync/login opened.")
+        if _orig_sync:
+            _orig_sync()
+        return
+
+    _V2_ACTIVE_ACTION = "ankiweb"
+
+    def after_sync() -> None:
+        global _V2_ACTIVE_ACTION
+        if progress:
+            progress("AnkiWeb: native sync finished.")
+        if _V2_ACTIVE_ACTION == "ankiweb":
+            _V2_ACTIVE_ACTION = None
+        if done:
+            done(True, "AnkiWeb sync finished.")
+
+    try:
+        mw._sync_collection_and_media(after_sync)
+    except Exception as err:  # noqa: BLE001
+        if _V2_ACTIVE_ACTION == "ankiweb":
+            _V2_ACTIVE_ACTION = None
+        if progress:
+            progress(f"AnkiWeb: failed to start native sync: {err}")
+        if done:
+            done(False, f"AnkiWeb sync failed to start: {err}")
+
+
 def _v2_forget_login() -> None:
     cfg = config.get()
     cfg["v2_token"] = ""
@@ -2199,13 +2247,14 @@ def _v2_sync_menu() -> None:
     menu.addSeparator()
 
     menu.setMinimumWidth(380)
-    act_sync = menu.addAction("Sync notes")
+    act_dual = menu.addAction("Sync KelmaSync + AnkiWeb")
+    act_kelma = menu.addAction("Sync KelmaSync only")
+    act_ankiweb = menu.addAction("Sync AnkiWeb only")
     act_compare = menu.addAction("Compare everything…")
-    if _V2_ACTIVE_ACTION == "sync":
-        act_sync.setEnabled(False)
-        act_compare.setEnabled(False)
-    elif _V2_ACTIVE_ACTION == "compare":
-        act_sync.setEnabled(False)
+    if _V2_ACTIVE_ACTION:
+        act_dual.setEnabled(False)
+        act_kelma.setEnabled(False)
+        act_ankiweb.setEnabled(False)
         act_compare.setEnabled(False)
     menu.addSeparator()
     act_settings = menu.addAction("Settings…")
@@ -2214,8 +2263,12 @@ def _v2_sync_menu() -> None:
     chosen = menu.exec(QCursor.pos())
     if chosen is None:
         return
-    if chosen is act_sync:
-        _v2_test_sync_notes()
+    if chosen is act_dual:
+        _v2_test_sync_notes(also_ankiweb=True)
+    elif chosen is act_kelma:
+        _v2_test_sync_notes(also_ankiweb=False)
+    elif chosen is act_ankiweb:
+        _v2_run_ankiweb_sync()
     elif chosen is act_compare:
         V2FullDiffDialog(mw).exec()
     elif chosen is act_settings:
@@ -2224,8 +2277,8 @@ def _v2_sync_menu() -> None:
         _v2_forget_login()
 
 
-def _v2_test_sync_notes() -> None:
-    """Experimental note-only v2 sync entrypoint."""
+def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
+    """Run Kelma v2 sync, optionally followed by native AnkiWeb sync."""
     global _V2_ACTIVE_ACTION
     blocked = _v2_active_message()
     if blocked:
@@ -2245,8 +2298,12 @@ def _v2_test_sync_notes() -> None:
     _V2_ACTIVE_ACTION = "sync"
     dlg = V2SyncProgressDialog(mw)
     dlg.show()
-    dlg.progress("Sync queued. Waiting for Anki collection worker…")
-    tooltip("KelmaSync: syncing… progress window opened.")
+    if also_ankiweb:
+        dlg.progress("Dual sync queued: KelmaSync first, then AnkiWeb.")
+        tooltip("KelmaSync + AnkiWeb: syncing… progress window opened.")
+    else:
+        dlg.progress("KelmaSync queued. Waiting for Anki collection worker…")
+        tooltip("KelmaSync: syncing… progress window opened.")
 
     def _work():
         dlg.progress("Worker started.")
@@ -2254,12 +2311,12 @@ def _v2_test_sync_notes() -> None:
 
     def _done(future: Future) -> None:
         global _V2_ACTIVE_ACTION
-        if _V2_ACTIVE_ACTION == "sync":
-            _V2_ACTIVE_ACTION = None
         try:
             result = future.result()
         except ContentSyncConflict as conflict:
             msg = f"{len(conflict.conflicts)} {conflict.resource} conflict(s). No checkpoint saved. Opening resolver…"
+            if _V2_ACTIVE_ACTION == "sync":
+                _V2_ACTIVE_ACTION = None
             dlg.complete(msg, ok=False)
             tooltip(f"KelmaSync: {msg}")
             # Open the full checksum diff resolver for notes/cards/decks/notetypes.
@@ -2267,7 +2324,9 @@ def _v2_test_sync_notes() -> None:
             V2FullDiffDialog(mw).exec()
             return
         except Exception as err:  # noqa: BLE001
-            dlg.complete(f"Sync failed: {err}", ok=False)
+            if _V2_ACTIVE_ACTION == "sync":
+                _V2_ACTIVE_ACTION = None
+            dlg.complete(f"KelmaSync failed: {err}", ok=False)
             tooltip(f"KelmaSync v2 sync failed: {err}")
             return
         cfg2 = config.get()
@@ -2281,8 +2340,25 @@ def _v2_test_sync_notes() -> None:
             f"cards {result.cards.pushed}/{result.cards.pulled}, "
             f"media {result.media.uploaded}/{result.media.downloaded}."
         )
-        dlg.complete(msg, ok=True)
-        tooltip(f"KelmaSync complete: {msg}")
+        if not also_ankiweb:
+            if _V2_ACTIVE_ACTION == "sync":
+                _V2_ACTIVE_ACTION = None
+            dlg.complete(msg, ok=True)
+            tooltip(f"KelmaSync complete: {msg}")
+            return
+
+        dlg.progress(f"KelmaSync complete: {msg}")
+        dlg.progress("Starting AnkiWeb sync…")
+
+        def ankiweb_done(ok: bool, text: str) -> None:
+            if ok:
+                dlg.complete(f"Dual sync complete. KelmaSync: {msg} AnkiWeb: {text}", ok=True)
+                tooltip("KelmaSync + AnkiWeb complete.")
+            else:
+                dlg.complete(f"KelmaSync complete, but {text}", ok=False)
+                tooltip(f"KelmaSync complete; AnkiWeb issue: {text}")
+
+        _v2_run_ankiweb_sync(progress=dlg.progress, done=ankiweb_done)
 
     try:
         mw.taskman.run_in_background(_work, _done, uses_collection=True)
@@ -2308,9 +2384,17 @@ def _build_menu() -> None:
         menu.setIcon(branding.star_icon())
     mw.form.menuTools.addMenu(menu)
 
-    act_sync = QAction("Sync notes", mw)
-    act_sync.triggered.connect(_v2_test_sync_notes)
+    act_sync = QAction("Sync KelmaSync + AnkiWeb", mw)
+    act_sync.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=True))
     menu.addAction(act_sync)
+
+    act_kelma = QAction("Sync KelmaSync only", mw)
+    act_kelma.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=False))
+    menu.addAction(act_kelma)
+
+    act_ankiweb = QAction("Sync AnkiWeb only", mw)
+    act_ankiweb.triggered.connect(lambda: _v2_run_ankiweb_sync())
+    menu.addAction(act_ankiweb)
 
     act_compare = QAction("Compare everything…", mw)
     act_compare.triggered.connect(lambda: V2FullDiffDialog(mw).exec())
@@ -2371,5 +2455,5 @@ def setup() -> None:
     """Entry point, called once after the profile/collection is ready."""
     _build_menu()
     _install_sync_hook()
-    # v2 path is explicit and note-only right now; do not install the old v1
-    # native-sync guard or other dual-sync behavior.
+    # Do not install the old native-sync guard: v2 dual sync intentionally runs
+    # KelmaSync first, then AnkiWeb's native sync.
