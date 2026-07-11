@@ -254,8 +254,9 @@ def _on_render(deck_browser, content) -> None:
         else:
             tree = _ROW_RE.sub(hide_repl, tree)
             content.tree = _STYLE + _sizes_html(totals) + _filter_bar() + tree
-    except Exception:  # noqa: BLE001 - never break the deck list over a badge
-        pass
+    except Exception as err:  # noqa: BLE001 - never break the deck list over a badge
+        import traceback
+        print(f"Kelma deckbadges _on_render error: {err}\n{traceback.format_exc()}")
 
 
 def _on_js_message(handled, message, context):
