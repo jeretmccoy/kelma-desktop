@@ -79,6 +79,15 @@ def _diff_keyed(
             assert l is not None and s is not None
             if "checksum" in l and "checksum" in s:
                 status: Status = "in-sync" if l["checksum"] == s["checksum"] else "changed"
+                # Card checksums are deliberately structural and exclude
+                # scheduling. In the source-review UI, equal structure with a
+                # different scheduling timestamp must still be visible so the
+                # user can choose Anki/AnkiWeb or KelmaSync as canonical.
+                if key == "logical_key" and status == "in-sync":
+                    local_ts = str(l.get("modified_at") or "")
+                    server_ts = str(s.get("client_modified_at") or s.get("modified_at") or "")
+                    if local_ts != server_ts:
+                        status = "changed"
             elif "modified_at" in l and "modified_at" in s:
                 status = "in-sync" if l["modified_at"] == s["modified_at"] else "changed"
             else:

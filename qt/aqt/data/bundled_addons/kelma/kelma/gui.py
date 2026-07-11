@@ -1967,15 +1967,24 @@ class V2NoteConflictDialog(QDialog):
 
 
 class V2FullDiffDialog(QDialog):
-    """Full server-vs-local compare with per-item and batch resolution."""
+    """Source-selection UI for local/AnkiWeb vs KelmaSync differences."""
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, reconcile_mode: bool = False, ankiweb_changes: int = 0) -> None:
         super().__init__(parent)
-        self.setWindowTitle("KelmaSync compare")
+        self._reconcile_mode = reconcile_mode
+        self.setWindowTitle("Choose canonical sync sources" if reconcile_mode else "KelmaSync compare")
         self.resize(1000, 640)
         self._client = None
 
         layout = QVBoxLayout(self)
+        if reconcile_mode:
+            intro = QLabel(
+                f"AnkiWeb check complete: {ankiweb_changes} scoped resource(s) changed locally. "
+                "Review differences below. Select rows and choose which source should become canonical; "
+                "then Continue to update KelmaSync and publish the result to AnkiWeb."
+            )
+            intro.setWordWrap(True)
+            layout.addWidget(intro)
         top_row = QHBoxLayout()
         top_row.addWidget(QLabel("Resource:"))
         self.resource_combo = QComboBox()
@@ -2009,7 +2018,11 @@ class V2FullDiffDialog(QDialog):
         layout.addWidget(self.table)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
+        close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        self.continue_button = close_button
+        if reconcile_mode:
+            close_button.setText("Continue reconciliation")
+        buttons.rejected.connect(self.accept if reconcile_mode else self.reject)
         layout.addWidget(buttons)
 
         self._diff = None
@@ -2191,6 +2204,7 @@ class V2FullDiffDialog(QDialog):
         self.status_label.setText(f"Resolving {len(entries)} item(s)…")
         self.btn_accept_all.setEnabled(False)
         self.btn_force_all.setEnabled(False)
+        self.continue_button.setEnabled(False)
 
         def work():
             from kelma_sync_v2 import anki_apply, anki_local
@@ -2241,6 +2255,7 @@ class V2FullDiffDialog(QDialog):
         def done_cb(future: Future) -> None:
             self.btn_accept_all.setEnabled(True)
             self.btn_force_all.setEnabled(True)
+            self.continue_button.setEnabled(True)
             try:
                 n = future.result()
             except Exception as err:  # noqa: BLE001
@@ -2735,7 +2750,7 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
             tooltip(f"KelmaSync: {msg}")
             # Local now includes the initial AnkiWeb sync, so the two sides are
             # explicitly Anki/AnkiWeb vs KelmaSync.
-            V2FullDiffDialog(mw).exec()
+            V2FullDiffDialog(mw, reconcile_mode=True).exec()
             if not also_ankiweb:
                 dlg.complete("Conflict choices applied. Run sync once more to verify convergence.", ok=True)
                 return
@@ -2830,6 +2845,10 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
             return
         count = changed_count(snapshots["before"], after)
         dlg.progress(f"AnkiWeb preflight complete: {count} scoped resource(s) changed locally.")
+        dlg.progress("Opening source-selection screen before changing KelmaSync…")
+        review = V2FullDiffDialog(mw, reconcile_mode=True, ankiweb_changes=count)
+        review.exec()
+        dlg.progress("Source review complete; applying reconciliation choices…")
         start_kelma_reconcile()
 
     def initial_ankiweb_done(ok: bool, text: str) -> None:
