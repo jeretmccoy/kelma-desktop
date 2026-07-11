@@ -2748,5 +2748,6 @@ def setup() -> None:
     """Entry point, called once after the profile/collection is ready."""
     _build_menu()
     _install_sync_hook()
+    deckbadges.setup()
     # Do not install the old native-sync guard: v2 dual sync intentionally runs
     # KelmaSync first, then AnkiWeb's native sync.
