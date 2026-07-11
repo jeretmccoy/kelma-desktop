@@ -95,7 +95,9 @@ def apply_card(col: Collection, record: dict[str, Any]) -> int:
         fields["factor"], fields["reps"], fields["lapses"], fields["left"],
         fields["odue"], fields["odid"], fields["flags"], fields["data"], cid,
     )
-    col.flush_scheduler()
+    # Current Anki observes direct scheduling updates without an explicit queue
+    # flush. `flush_scheduler()` never existed here; calling it previously
+    # raised after every pull and caused valid server scheduling to be skipped.
     return cid
 
 

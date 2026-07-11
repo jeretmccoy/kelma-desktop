@@ -72,8 +72,8 @@ def sync_cards_once(col: Collection, client: V2Client, server_manifest: dict | N
                 try:
                     anki_apply.apply_server_card(col, client, int(s["card_id"]))
                     result.pulled += 1
-                except Exception:
-                    result.skipped += 1
+                except Exception as err:
+                    raise RuntimeError(f"failed to apply server scheduling for {key}: {err}") from err
             else:
                 result.skipped += 1
             continue
@@ -85,8 +85,8 @@ def sync_cards_once(col: Collection, client: V2Client, server_manifest: dict | N
             try:
                 anki_apply.apply_server_card(col, client, int(s["card_id"]))
                 result.pulled += 1
-            except Exception:
-                result.skipped += 1
+            except Exception as err:
+                raise RuntimeError(f"failed to apply server card {key}: {err}") from err
     if local_only:
         if progress:
             progress(f"Cards: pushing {len(local_only)} new cards in {_BATCH_SIZE}-item batches…")
