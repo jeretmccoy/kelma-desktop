@@ -2882,24 +2882,35 @@ class V2JointStateDialog(QDialog):
         self._temp_dir: str | None = None
         self._sources: dict[str, dict[str, dict]] = {}
         self._rows: list[tuple[str, str]] = []
+        self._row_values: list[dict[str, dict | None]] = []
         self._choices: list[QComboBox] = []
+        self._suggestions: list[str] = []
+        self._note_previews: dict[str, str] = {}
         self._deck_names = _v2_kelma_deck_names()
 
         layout = QVBoxLayout(self)
+        title = QLabel("<b>Choose what should be kept</b>")
+        layout.addWidget(title)
         intro = QLabel(
-            "Fetching current client, AnkiWeb, and KelmaSync independently. "
-            "Choose the desired client value for each difference, apply it locally, "
-            "then publish that client state to both services."
+            "Kelma compares three separate copies: <b>This computer</b>, "
+            "<b>AnkiWeb</b>, and <b>KelmaSync</b>. Nothing is changed while you "
+            "review this screen. For each difference, choose the copy you trust. "
+            "Technical checksums and raw scheduling values stay hidden under "
+            "<b>More details</b>."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
-        self.status = QLabel("Waiting to fetch sources…")
+        self.status = QLabel("Fetching the three copies independently…")
+        self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
         source_buttons = QHBoxLayout()
-        for text, source in (("Choose Client for all", "Client"),
-                             ("Choose AnkiWeb for all", "AnkiWeb"),
-                             ("Choose KelmaSync for all", "KelmaSync")):
+        recommended = QPushButton("Use all recommended choices")
+        recommended.clicked.connect(self._choose_recommended)
+        source_buttons.addWidget(recommended)
+        for text, source in (("Keep this computer for all", "Client"),
+                             ("Use AnkiWeb for all", "AnkiWeb"),
+                             ("Use KelmaSync for all", "KelmaSync")):
             button = QPushButton(text)
             button.clicked.connect(lambda _=False, s=source: self._choose_all(s))
             source_buttons.addWidget(button)
@@ -2907,19 +2918,25 @@ class V2JointStateDialog(QDialog):
         layout.addLayout(source_buttons)
 
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Resource / key", "Client", "AnkiWeb", "KelmaSync", "Desired client state"])
+        self.table.setHorizontalHeaderLabels(
+            ["Item", "What is different?", "Recommendation", "Keep", ""]
+        )
+        self.table.setWordWrap(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        for col in (1, 2, 3):
-            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.table)
 
         actions = QHBoxLayout()
-        self.apply_btn = QPushButton("Apply choices to client")
+        self.apply_btn = QPushButton("1. Apply these choices to this computer")
         self.apply_btn.clicked.connect(self._apply)
-        self.push_kelma_btn = QPushButton("Push client state to KelmaSync")
+        self.push_kelma_btn = QPushButton("2. Publish the result to KelmaSync")
         self.push_kelma_btn.clicked.connect(self._push_kelma)
-        self.push_anki_btn = QPushButton("Push client state to AnkiWeb")
+        self.push_anki_btn = QPushButton("3. Publish the result to AnkiWeb")
         self.push_anki_btn.clicked.connect(self._push_ankiweb)
         self.push_kelma_btn.setEnabled(False)
         self.push_anki_btn.setEnabled(False)
@@ -3025,23 +3042,162 @@ class V2JointStateDialog(QDialog):
 
         mw.taskman.run_in_background(work, done, uses_collection=True)
 
-    def _preview(self, resource: str, item: dict | None) -> str:
-        if item is None:
-            return "(missing)"
-        if resource == "notes":
-            return f"checksum {str(item.get('checksum', ''))[:10]} · {item.get('modified_at', '')}"
+    @staticmethod
+    def _source_label(source: str) -> str:
+        return "this computer" if source == "Client" else source
+
+    @staticmethod
+    def _resource_description(resource: str) -> str:
+        return {
+            "notes": "note text or tags",
+            "cards": "review progress and schedule",
+            "notetypes": "note type or card template",
+            "decks": "deck settings",
+        }[resource]
+
+    @staticmethod
+    def _modified_sort_value(item: dict | None) -> float:
+        if not item:
+            return -1
+        raw = item.get("modified_at") or item.get("client_modified_at") or ""
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            return -1
+
+    def _suggestion(self, resource: str, values: dict[str, dict | None]) -> tuple[str, str]:
+        sources = ("Client", "AnkiWeb", "KelmaSync")
+        present = [source for source in sources if values[source] is not None]
+        if len(present) == 1:
+            source = present[0]
+            return source, f"Keep {self._source_label(source)} so this item is not accidentally deleted."
+
+        groups: dict[object, list[str]] = {}
+        for source in sources:
+            groups.setdefault(self._fingerprint(resource, values[source]), []).append(source)
+        largest = max(groups.values(), key=len)
+        if len(largest) >= 2:
+            # Prefer the local copy when it already agrees, avoiding needless writes.
+            source = next((s for s in ("Client", "AnkiWeb", "KelmaSync") if s in largest), largest[0])
+            if values[source] is None:
+                # Deletion is never the automatic recommendation when another copy survives.
+                source = present[0]
+                return source, f"Keep {self._source_label(source)} to avoid deleting the only surviving copy."
+            agreeing = " and ".join(self._source_label(s) for s in largest)
+            return source, f"Use the version on {agreeing}; those two copies agree."
+
         if resource == "cards":
-            sched = item.get("scheduling") or {}
-            return (
-                f"{item.get('deck_name', '')} · queue {sched.get('queue', 0)} · "
-                f"due {sched.get('due', 0)} · interval {sched.get('ivl', 0)} · reps {sched.get('reps', 0)}"
+            source = max(
+                present,
+                key=lambda s: (
+                    int((values[s].get("scheduling") or {}).get("reps", 0) or 0),
+                    self._modified_sort_value(values[s]),
+                ),
             )
-        return f"checksum {str(item.get('checksum', ''))[:10]} · {item.get('modified_at', '')}"
+            return source, f"Use {self._source_label(source)} because it appears to contain the latest review progress."
+        source = max(present, key=lambda s: self._modified_sort_value(values[s]))
+        return source, f"Use {self._source_label(source)} because it has the newest modification time."
+
+    def _difference_text(self, resource: str, values: dict[str, dict | None]) -> str:
+        sources = ("Client", "AnkiWeb", "KelmaSync")
+        present = [s for s in sources if values[s] is not None]
+        missing = [s for s in sources if values[s] is None]
+        description = self._resource_description(resource)
+        if len(present) == 1:
+            return f"Only {self._source_label(present[0])} has this item. It is absent from the other two copies."
+        if missing:
+            absent = self._source_label(missing[0])
+            if self._fingerprint(resource, values[present[0]]) == self._fingerprint(resource, values[present[1]]):
+                return f"This item is missing from {absent}. {self._source_label(present[0]).capitalize()} and {self._source_label(present[1])} still have matching copies."
+            return f"This item is missing from {absent}, and the two remaining copies also disagree about its {description}."
+
+        groups: dict[object, list[str]] = {}
+        for source in sources:
+            groups.setdefault(self._fingerprint(resource, values[source]), []).append(source)
+        matching = next((group for group in groups.values() if len(group) == 2), None)
+        if matching:
+            outlier = next(source for source in sources if source not in matching)
+            agree = " and ".join(self._source_label(s) for s in matching)
+            return f"The {description} on {self._source_label(outlier)} is different. {agree.capitalize()} agree with each other."
+        return f"All three copies contain different {description}. Review the recommendation or open More details before choosing."
+
+    def _load_note_previews(self) -> None:
+        guids = set(self._sources.get("notes", {}).get("Client", {}))
+        for item in self._sources.get("cards", {}).get("Client", {}).values():
+            if item.get("note_guid"):
+                guids.add(str(item["note_guid"]))
+        guid_list = list(guids)
+        for start in range(0, len(guid_list), 400):
+            batch = guid_list[start:start + 400]
+            marks = ",".join("?" for _ in batch)
+            for guid, fields in mw.col.db.all(f"SELECT guid, flds FROM notes WHERE guid IN ({marks})", *batch):
+                first = str(fields or "").split("\x1f", 1)[0]
+                first = re.sub(r"<[^>]+>", " ", first)
+                first = re.sub(r"\s+", " ", first).strip()
+                if first:
+                    self._note_previews[str(guid)] = first[:70] + ("…" if len(first) > 70 else "")
+
+    def _item_label(self, resource: str, key: str, values: dict[str, dict | None]) -> str:
+        if resource == "decks":
+            return f"Deck\n{key}"
+        if resource == "notetypes":
+            return f"Note type\nID {key}"
+        guid = key.split(":", 1)[0] if resource == "cards" else key
+        preview = self._note_previews.get(guid, f"ID …{guid[-8:]}")
+        if resource == "cards":
+            item = next((value for value in values.values() if value), {})
+            deck = item.get("deck_name", "")
+            return f"Card · {deck}\n{preview}"
+        return f"Note\n{preview}"
+
+    def _technical_text(self, resource: str, key: str, values: dict[str, dict | None]) -> str:
+        lines = [f"{resource[:-1].title()}: {key}", ""]
+        for source in ("Client", "AnkiWeb", "KelmaSync"):
+            lines.append(("This computer" if source == "Client" else source) + ":")
+            item = values[source]
+            if item is None:
+                lines.append("  Not present")
+            else:
+                lines.append(f"  Checksum: {item.get('checksum', '(none)')}")
+                lines.append(f"  Modified: {item.get('modified_at', item.get('client_modified_at', '(unknown)'))}")
+                if resource == "cards":
+                    lines.append("  Raw scheduling:")
+                    for name, value in sorted((item.get("scheduling") or {}).items()):
+                        lines.append(f"    {name}: {value}")
+                lines.append("  Raw manifest item:")
+                lines.extend(f"    {line}" for line in json.dumps(item, indent=2, sort_keys=True, default=str).splitlines())
+            lines.append("")
+        return "\n".join(lines)
+
+    def _show_details(self, resource: str, key: str, values: dict[str, dict | None]) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Technical details")
+        dialog.resize(760, 560)
+        layout = QVBoxLayout(dialog)
+        heading = QLabel(
+            "These are the exact identifiers, checksums, timestamps, and raw values "
+            "used to compare the three copies."
+        )
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+        text = QTextBrowser()
+        text.setPlainText(self._technical_text(resource, key, values))
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def _populate(self) -> None:
         self._rows.clear()
+        self._row_values.clear()
         self._choices.clear()
+        self._suggestions.clear()
+        self._load_note_previews()
         rows = []
+        counts = Counter()
         for resource in ("notes", "cards", "notetypes", "decks"):
             maps = self._sources[resource]
             for key in sorted(set().union(*(set(m) for m in maps.values()))):
@@ -3049,30 +3205,67 @@ class V2JointStateDialog(QDialog):
                 fingerprints = {self._fingerprint(resource, value) for value in values.values()}
                 if len(fingerprints) > 1:
                     rows.append((resource, key, values))
+                    counts[resource] += 1
         self.table.setRowCount(len(rows))
         for row, (resource, key, values) in enumerate(rows):
             self._rows.append((resource, key))
-            self.table.setItem(row, 0, QTableWidgetItem(f"{resource[:-1]} · {key}"))
-            for col, source in enumerate(("Client", "AnkiWeb", "KelmaSync"), 1):
-                self.table.setItem(row, col, QTableWidgetItem(self._preview(resource, values[source])))
+            self._row_values.append(values)
+            suggested, reason = self._suggestion(resource, values)
+            self._suggestions.append(suggested)
+            item_cell = QTableWidgetItem(self._item_label(resource, key, values))
+            difference_cell = QTableWidgetItem(self._difference_text(resource, values))
+            recommendation_cell = QTableWidgetItem(reason)
+            self.table.setItem(row, 0, item_cell)
+            self.table.setItem(row, 1, difference_cell)
+            self.table.setItem(row, 2, recommendation_cell)
             choice = QComboBox()
-            choice.addItems(["Client", "AnkiWeb", "KelmaSync"])
-            choice.setCurrentText("Client")
-            self.table.setCellWidget(row, 4, choice)
+            for source in ("Client", "AnkiWeb", "KelmaSync"):
+                if values[source] is None:
+                    label = f"Remove it (match {self._source_label(source)})"
+                else:
+                    label = {
+                        "Client": "Keep this computer's version",
+                        "AnkiWeb": "Use AnkiWeb's version",
+                        "KelmaSync": "Use KelmaSync's version",
+                    }[source]
+                if source == suggested:
+                    label += " — recommended"
+                choice.addItem(label, source)
+            choice.setCurrentIndex(choice.findData(suggested))
+            self.table.setCellWidget(row, 3, choice)
             self._choices.append(choice)
-        self.status.setText(f"All sources fetched independently · {len(rows)} difference(s) require a client-state decision.")
-        self.apply_btn.setEnabled(True)
+            details = QPushButton("More details…")
+            details.clicked.connect(
+                lambda _=False, r=resource, k=key, v=values: self._show_details(r, k, v)
+            )
+            self.table.setCellWidget(row, 4, details)
+            self.table.resizeRowToContents(row)
+        if rows:
+            summary = ", ".join(f"{count} {resource}" for resource, count in counts.items())
+            self.status.setText(
+                f"Found {len(rows)} difference(s): {summary}. Recommended choices are already selected; review them, then apply."
+            )
+            self.apply_btn.setEnabled(True)
+        else:
+            self.status.setText("Everything already matches across this computer, AnkiWeb, and KelmaSync. No choices are needed.")
+            self.apply_btn.setEnabled(False)
 
     def _choose_all(self, source: str) -> None:
         for choice in self._choices:
-            choice.setCurrentText(source)
+            index = choice.findData(source)
+            if index >= 0:
+                choice.setCurrentIndex(index)
+
+    def _choose_recommended(self) -> None:
+        for choice, source in zip(self._choices, self._suggestions):
+            choice.setCurrentIndex(choice.findData(source))
 
     def _apply(self) -> None:
-        decisions = [(resource, key, self._choices[i].currentText()) for i, (resource, key) in enumerate(self._rows)]
+        decisions = [(resource, key, str(self._choices[i].currentData())) for i, (resource, key) in enumerate(self._rows)]
         client = self._client
         temp_path = str(Path(self._temp_dir or "") / "collection.anki2")
         self.apply_btn.setEnabled(False)
-        self.status.setText("Applying chosen joint state to the client…")
+        self.status.setText("Applying your choices to this computer…")
 
         def work():
             from anki.collection import Collection
@@ -3109,17 +3302,17 @@ class V2JointStateDialog(QDialog):
         def done(future: Future) -> None:
             try: count = future.result()
             except Exception as err:  # noqa: BLE001
-                self.status.setText(f"Could not apply client state: {err}")
+                self.status.setText(f"Could not apply the choices to this computer: {err}")
                 self.apply_btn.setEnabled(True)
                 return
-            self.status.setText(f"Client state decided ({count} differences processed). Push it to both services below.")
+            self.status.setText(f"Applied {count} choice(s) to this computer. Now publish the result to KelmaSync and AnkiWeb.")
             self.push_kelma_btn.setEnabled(True)
             self.push_anki_btn.setEnabled(True)
 
         mw.taskman.run_in_background(work, done, uses_collection=True)
 
     def _push_kelma(self) -> None:
-        self.status.setText("Pushing chosen client state to KelmaSync…")
+        self.status.setText("Publishing the chosen version from this computer to KelmaSync…")
         self.push_kelma_btn.setEnabled(False)
         def work():
             from kelma_sync_v2.canonical_sync import push_client_state
@@ -3127,11 +3320,11 @@ class V2JointStateDialog(QDialog):
         def done(future: Future) -> None:
             try: totals = future.result()
             except Exception as err: self.status.setText(f"KelmaSync push failed: {err}"); self.push_kelma_btn.setEnabled(True); return
-            self.status.setText("Client state pushed to KelmaSync. Now push to AnkiWeb.")
+            self.status.setText("KelmaSync now has the chosen version. Publish it to AnkiWeb to make all three copies agree.")
         mw.taskman.run_in_background(work, done, uses_collection=True)
 
     def _push_ankiweb(self) -> None:
-        self.status.setText("Preparing chosen client state for AnkiWeb…")
+        self.status.setText("Preparing the chosen version on this computer for AnkiWeb…")
         self.push_anki_btn.setEnabled(False)
         def work():
             from kelma_sync_v2.canonical_sync import mark_client_state_for_ankiweb
@@ -3140,7 +3333,7 @@ class V2JointStateDialog(QDialog):
             try: future.result()
             except Exception as err: self.status.setText(f"AnkiWeb preparation failed: {err}"); self.push_anki_btn.setEnabled(True); return
             def synced(ok: bool, text: str) -> None:
-                self.status.setText("Client state pushed to AnkiWeb." if ok else f"AnkiWeb push failed: {text}")
+                self.status.setText("AnkiWeb now has the chosen version." if ok else f"AnkiWeb publish failed: {text}")
                 self.push_anki_btn.setEnabled(not ok)
             _v2_run_ankiweb_sync(done=synced)
         mw.taskman.run_in_background(work, marked, uses_collection=True)
