@@ -47,6 +47,11 @@ from . import auth, branding, capabilities, config, consts, deckbadges, engine, 
 
 _orig_sync = None
 _V2_ACTIVE_ACTION: str | None = None
+_V2_STAGED = {
+    "ankiweb_pulled": False,
+    "kelma_pulled": False,
+    "client_decided": False,
+}
 
 
 def _v2_active_message() -> str | None:
@@ -1969,19 +1974,24 @@ class V2NoteConflictDialog(QDialog):
 class V2FullDiffDialog(QDialog):
     """Source-selection UI for local/AnkiWeb vs KelmaSync differences."""
 
-    def __init__(self, parent=None, *, reconcile_mode: bool = False, ankiweb_changes: int = 0) -> None:
+    def __init__(self, parent=None, *, reconcile_mode: bool = False, ankiweb_changes: int = 0, staged_mode: bool = False) -> None:
         super().__init__(parent)
         self._reconcile_mode = reconcile_mode
-        self.setWindowTitle("Choose canonical sync sources" if reconcile_mode else "KelmaSync compare")
+        self._staged_mode = staged_mode
+        self.setWindowTitle("Decide client state" if staged_mode else ("Choose canonical sync sources" if reconcile_mode else "KelmaSync compare"))
         self.resize(1000, 640)
         self._client = None
 
         layout = QVBoxLayout(self)
-        if reconcile_mode:
+        if reconcile_mode or staged_mode:
             intro = QLabel(
-                f"AnkiWeb check complete: {ankiweb_changes} scoped resource(s) changed locally. "
-                "Review differences below. Select rows and choose which source should become canonical; "
-                "then Continue to update KelmaSync and publish the result to AnkiWeb."
+                ("Both sources have been pulled. Decide what the local client should contain. "
+                 "Use Anki / AnkiWeb keeps the current local version; Use KelmaSync applies the server version locally. "
+                 "Nothing is pushed until you use the separate push actions."
+                 if staged_mode else
+                 f"AnkiWeb check complete: {ankiweb_changes} scoped resource(s) changed locally. "
+                 "Review differences below. Select rows and choose which source should become canonical; "
+                 "then Continue to update KelmaSync and publish the result to AnkiWeb.")
             )
             intro.setWordWrap(True)
             layout.addWidget(intro)
@@ -2020,9 +2030,11 @@ class V2FullDiffDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
         self.continue_button = close_button
-        if reconcile_mode:
+        if staged_mode:
+            close_button.setText("Use this client state")
+        elif reconcile_mode:
             close_button.setText("Continue reconciliation")
-        buttons.rejected.connect(self.accept if reconcile_mode else self.reject)
+        buttons.rejected.connect(self.accept if (reconcile_mode or staged_mode) else self.reject)
         layout.addWidget(buttons)
 
         self._diff = None
@@ -2211,7 +2223,18 @@ class V2FullDiffDialog(QDialog):
             done = 0
             for entry in entries:
                 if mode == "accept":
-                    if entry.resource == "guid":
+                    if self._staged_mode and entry.server is None:
+                        # KelmaSync has no such resource, so choosing Kelma means
+                        # removing the local-only resource from client state.
+                        if entry.resource == "guid":
+                            anki_apply.delete_note(mw.col, entry.key)
+                        elif entry.resource == "name":
+                            anki_apply.delete_deck(mw.col, entry.key)
+                        elif entry.resource in {"card_id", "logical_key"}:
+                            cid = int((entry.local or {}).get("card_id") or 0)
+                            if cid:
+                                anki_apply.delete_card(mw.col, cid)
+                    elif entry.resource == "guid":
                         anki_apply.apply_note(mw.col, client.get_note(entry.key))
                     elif entry.resource == "notetype_id":
                         anki_apply.apply_notetype(mw.col, client.get_notetype(int(entry.key)))
@@ -2220,7 +2243,12 @@ class V2FullDiffDialog(QDialog):
                     elif entry.resource in {"card_id", "logical_key"}:
                         cid = int((entry.server or {}).get("card_id") or entry.key)
                         anki_apply.apply_card(mw.col, client.get_card(cid))
-                else:  # force
+                else:  # choose local / force
+                    if self._staged_mode:
+                        # Local already represents Anki/AnkiWeb. Source selection
+                        # must not publish anything until the explicit push step.
+                        done += 1
+                        continue
                     if entry.resource == "guid":
                         rec = anki_local.note_record(mw.col, entry.key)
                         if rec:
@@ -2262,7 +2290,12 @@ class V2FullDiffDialog(QDialog):
                 self.status_label.setText(f"Resolve failed: {err}")
                 return
             tooltip(f"Resolved {n} item(s).")
-            self._load()  # reload once
+            if self._staged_mode:
+                for entry in entries:
+                    entry.status = "in-sync"
+                self._populate()
+            else:
+                self._load()  # reload once
 
         mw.taskman.run_in_background(work, done_cb, uses_collection=True)
 
@@ -2609,8 +2642,126 @@ def _v2_preview(record: dict) -> str:
     return str(record)[:160]
 
 
+def _stage_pull_ankiweb() -> None:
+    """Refresh local state from AnkiWeb as stage one of manual reconciliation."""
+    _V2_STAGED.update(ankiweb_pulled=False, kelma_pulled=False, client_decided=False)
+
+    def done(ok: bool, text: str) -> None:
+        if ok:
+            _V2_STAGED["ankiweb_pulled"] = True
+            tooltip("AnkiWeb state is now loaded locally. Next: Pull from KelmaSync.")
+        else:
+            tooltip(f"AnkiWeb pull failed: {text}")
+
+    _v2_run_ankiweb_sync(done=done)
+
+
+def _stage_pull_kelmasync() -> None:
+    """Fetch KelmaSync state without applying or publishing it."""
+    if not _V2_STAGED["ankiweb_pulled"]:
+        tooltip("Pull from AnkiWeb first.")
+        return
+    client = _v2_client_or_login()
+    if client is None:
+        return
+    deck_names = _v2_kelma_deck_names()
+    dlg = V2SyncProgressDialog(mw)
+    dlg.setWindowTitle("Pull from KelmaSync")
+    dlg.show()
+
+    def work():
+        from kelma_sync_v2.content_sync import _scope_server_manifest_to_decks
+        dlg.progress("Fetching KelmaSync manifest…")
+        manifest = client.manifest()
+        return _scope_server_manifest_to_decks(client, manifest, deck_names, progress=dlg.progress)
+
+    def finished(future: Future) -> None:
+        try:
+            manifest = future.result()
+        except Exception as err:  # noqa: BLE001
+            dlg.complete(f"KelmaSync pull failed: {err}", ok=False)
+            return
+        _V2_STAGED["kelma_pulled"] = True
+        _V2_STAGED["client_decided"] = False
+        dlg.complete(
+            f"KelmaSync state loaded: {len(manifest.get('notes', []))} notes, "
+            f"{len(manifest.get('cards', []))} cards. Nothing changed locally.",
+            ok=True,
+        )
+        tooltip("KelmaSync state loaded. Next: Decide client state.")
+
+    mw.taskman.run_in_background(work, finished, uses_collection=True)
+
+
+def _stage_decide_client() -> None:
+    if not (_V2_STAGED["ankiweb_pulled"] and _V2_STAGED["kelma_pulled"]):
+        tooltip("Pull from AnkiWeb and KelmaSync first.")
+        return
+    dialog = V2FullDiffDialog(mw, staged_mode=True)
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        _V2_STAGED["client_decided"] = True
+        tooltip("Client state decided. Push it to KelmaSync and AnkiWeb.")
+
+
+def _stage_push_kelmasync() -> None:
+    if not _V2_STAGED["client_decided"]:
+        tooltip("Decide client state first.")
+        return
+    client = _v2_client_or_login()
+    if client is None:
+        return
+    deck_names = _v2_kelma_deck_names()
+    dlg = V2SyncProgressDialog(mw)
+    dlg.setWindowTitle("Push client state to KelmaSync")
+    dlg.show()
+
+    def work():
+        from kelma_sync_v2.canonical_sync import push_client_state
+        return push_client_state(mw.col, client, deck_names=deck_names, progress=dlg.progress)
+
+    def finished(future: Future) -> None:
+        try:
+            totals = future.result()
+        except Exception as err:  # noqa: BLE001
+            dlg.complete(f"KelmaSync push failed: {err}", ok=False)
+            return
+        dlg.complete("Client state pushed to KelmaSync: " + ", ".join(f"{k} {v}" for k, v in totals.items()), ok=True)
+
+    mw.taskman.run_in_background(work, finished, uses_collection=True)
+
+
+def _stage_push_ankiweb() -> None:
+    if not _V2_STAGED["client_decided"]:
+        tooltip("Decide client state first.")
+        return
+    deck_names = _v2_kelma_deck_names()
+
+    def mark_work():
+        from kelma_sync_v2.canonical_sync import mark_client_state_for_ankiweb
+        return mark_client_state_for_ankiweb(mw.col, deck_names)
+
+    def marked(future: Future) -> None:
+        try:
+            notes, cards = future.result()
+        except Exception as err:  # noqa: BLE001
+            tooltip(f"Could not prepare AnkiWeb push: {err}")
+            return
+        tooltip(f"Publishing client state to AnkiWeb ({notes} notes, {cards} cards)…")
+
+        def done(ok: bool, text: str) -> None:
+            if ok:
+                _V2_STAGED.update(ankiweb_pulled=False, kelma_pulled=False, client_decided=False)
+                tooltip("Client state published to AnkiWeb. Reconciliation complete.")
+            else:
+                tooltip(f"AnkiWeb push failed: {text}")
+
+        _v2_run_ankiweb_sync(done=done)
+
+    mw.taskman.run_in_background(mark_work, marked, uses_collection=True)
+
+
 def _v2_sync_menu() -> None:
-    """V2 popup shown from the Anki Sync button.
+    """Explicit staged sync menu shown from the Anki Sync button.
 
     This restores the old interaction pattern (click Sync → Kelma menu appears)
     while keeping all actions on the v2 path.
@@ -2638,11 +2789,19 @@ def _v2_sync_menu() -> None:
         scope_line += f" · AnkiWeb: ✓ {_service_size_text(consts.ANKIWEB, ankiweb_decks, refresh=False)}"
     active = _v2_active_message()
     active_html = f"<br><span style='color:#d98'>⚠ {active}</span>" if active else ""
+    stage_html = ""
+    if not config.kelmasync_only():
+        mark = lambda value: "✓" if value else "○"
+        stage_html = (
+            f"<br><span style='color:#888'>"
+            f"{mark(_V2_STAGED['ankiweb_pulled'])} AnkiWeb pulled · "
+            f"{mark(_V2_STAGED['kelma_pulled'])} KelmaSync pulled · "
+            f"{mark(_V2_STAGED['client_decided'])} client decided</span>"
+        )
     status_label = QLabel(
         f"<b>{status}</b> · {user}<br>"
         f"<span style='color:#888'>{endpoint}</span><br>"
-        f"{scope_line}"
-        f"{active_html}"
+        f"{scope_line}{stage_html}{active_html}"
     )
     status_wrap = QWidget()
     status_layout = QHBoxLayout(status_wrap)
@@ -2655,21 +2814,30 @@ def _v2_sync_menu() -> None:
     menu.addSeparator()
 
     menu.setMinimumWidth(380)
+    staged_actions = []
     if config.kelmasync_only():
-        act_dual = None
         act_kelma = menu.addAction("Sync KelmaSync")
-        act_ankiweb = None
+        act_pull_ankiweb = act_pull_kelma = act_decide = None
+        act_push_kelma = act_push_ankiweb = None
     else:
-        act_dual = menu.addAction("Sync KelmaSync + AnkiWeb")
-        act_kelma = menu.addAction("Sync KelmaSync only")
-        act_ankiweb = menu.addAction("Sync AnkiWeb only")
+        act_kelma = None
+        act_pull_ankiweb = menu.addAction("1. Pull from AnkiWeb")
+        act_pull_kelma = menu.addAction("2. Pull from KelmaSync")
+        act_decide = menu.addAction("3. Decide client state…")
+        menu.addSeparator()
+        act_push_kelma = menu.addAction("4. Push client state to KelmaSync")
+        act_push_ankiweb = menu.addAction("5. Push client state to AnkiWeb")
+        staged_actions = [act_pull_ankiweb, act_pull_kelma, act_decide, act_push_kelma, act_push_ankiweb]
+        act_pull_kelma.setEnabled(_V2_STAGED["ankiweb_pulled"])
+        act_decide.setEnabled(_V2_STAGED["ankiweb_pulled"] and _V2_STAGED["kelma_pulled"])
+        act_push_kelma.setEnabled(_V2_STAGED["client_decided"])
+        act_push_ankiweb.setEnabled(_V2_STAGED["client_decided"])
     act_compare = menu.addAction("Compare everything…")
     if _V2_ACTIVE_ACTION:
-        if act_dual is not None:
-            act_dual.setEnabled(False)
-        act_kelma.setEnabled(False)
-        if act_ankiweb is not None:
-            act_ankiweb.setEnabled(False)
+        if act_kelma is not None:
+            act_kelma.setEnabled(False)
+        for action in staged_actions:
+            action.setEnabled(False)
         act_compare.setEnabled(False)
     menu.addSeparator()
     act_settings = menu.addAction("Settings && deck routing…")
@@ -2679,12 +2847,18 @@ def _v2_sync_menu() -> None:
     chosen = menu.exec(QCursor.pos())
     if chosen is None:
         return
-    if act_dual is not None and chosen is act_dual:
-        _v2_test_sync_notes(also_ankiweb=True)
-    elif chosen is act_kelma:
+    if act_kelma is not None and chosen is act_kelma:
         _v2_test_sync_notes(also_ankiweb=False)
-    elif act_ankiweb is not None and chosen is act_ankiweb:
-        _v2_run_ankiweb_sync()
+    elif act_pull_ankiweb is not None and chosen is act_pull_ankiweb:
+        _stage_pull_ankiweb()
+    elif act_pull_kelma is not None and chosen is act_pull_kelma:
+        _stage_pull_kelmasync()
+    elif act_decide is not None and chosen is act_decide:
+        _stage_decide_client()
+    elif act_push_kelma is not None and chosen is act_push_kelma:
+        _stage_push_kelmasync()
+    elif act_push_ankiweb is not None and chosen is act_push_ankiweb:
+        _stage_push_ankiweb()
     elif chosen is act_compare:
         V2FullDiffDialog(mw).exec()
     elif chosen is act_settings:
@@ -2892,17 +3066,9 @@ def _build_menu() -> None:
         act_sync.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=False))
         menu.addAction(act_sync)
     else:
-        act_sync = QAction("Sync KelmaSync + AnkiWeb", mw)
-        act_sync.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=True))
-        menu.addAction(act_sync)
-
-        act_kelma = QAction("Sync KelmaSync only", mw)
-        act_kelma.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=False))
-        menu.addAction(act_kelma)
-
-        act_ankiweb = QAction("Sync AnkiWeb only", mw)
-        act_ankiweb.triggered.connect(lambda: _v2_run_ankiweb_sync())
-        menu.addAction(act_ankiweb)
+        act_staged = QAction("Open staged sync menu…", mw)
+        act_staged.triggered.connect(_v2_sync_menu)
+        menu.addAction(act_staged)
 
     act_compare = QAction("Compare everything…", mw)
     act_compare.triggered.connect(lambda: V2FullDiffDialog(mw).exec())
