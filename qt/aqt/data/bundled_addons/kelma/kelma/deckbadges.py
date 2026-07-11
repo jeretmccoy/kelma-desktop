@@ -280,3 +280,11 @@ def setup() -> None:
     gui_hooks.deck_browser_will_render_content.append(_on_render)
     gui_hooks.webview_did_receive_js_message.append(_on_js_message)
     _installed = True
+    # KelmaDesktop renders the deck browser (moveToState in loadCollection)
+    # BEFORE profile_did_open fires, so the first paint happens without our
+    # hook. Re-render once so badges + sizes show immediately on startup.
+    try:
+        if mw.state == "deckBrowser":
+            mw.deckBrowser.refresh()
+    except Exception:  # noqa: BLE001
+        pass
