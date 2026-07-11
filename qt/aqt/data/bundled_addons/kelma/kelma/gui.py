@@ -4,6 +4,7 @@ plus integration with the Sync button."""
 from __future__ import annotations
 
 import difflib
+import json
 import re
 import sys
 import time
@@ -1314,15 +1315,17 @@ class SettingsDialog(QDialog):
         outer.addLayout(path_row)
 
         # --- Deck routing -----------------------------------------------------
-        outer.addWidget(
-            QLabel(
-                "Tick where each deck should sync (a deck with neither ticked is "
-                "not synced; new decks default to KelmaSync). <b>Shift-click</b> a box "
-                "to set every deck in the range. The cloud columns show pending "
-                "changes since that cloud last synced: <b>+n</b> added, "
-                "<b>~n</b> changed, <b>✓</b> in sync."
-            )
+        route_help = (
+            "Tick where each deck should sync. "
+            "<b>✓ KelmaSync</b> = synced to Kelma; <b>— local only</b> = stays local."
         )
+        if not config.kelmasync_only():
+            route_help += " In Anki, a deck can be <b>KelmaSync</b>, <b>AnkiWeb</b>, <b>both</b>, or <b>neither</b>."
+        route_help += " <b>Shift-click</b> a box to set a range."
+        outer.addWidget(QLabel(route_help))
+        self.route_summary = QLabel()
+        self.route_summary.setStyleSheet("font-weight: bold;")
+        outer.addWidget(self.route_summary)
         self.summary = QLabel()
         self.summary.setStyleSheet("color: palette(mid);")
         outer.addWidget(self.summary)
@@ -1411,6 +1414,16 @@ class SettingsDialog(QDialog):
                 cached = _size_cache_get(s) or {}
                 labels[col] = f"{consts.SERVICE_LABEL[s]}\n{_fmt_gb(int(cached.get('media_bytes', 0) or 0))}"
         self.table.setHorizontalHeaderLabels(labels)
+        if hasattr(self, "route_summary"):
+            pieces = []
+            for s in config.ui_services():
+                routed = config.decks_for_service(s, names)
+                pieces.append(f"✓ {consts.SERVICE_LABEL[s]}: {_service_size_text(s, routed, refresh=False)}")
+            local_only = [n for n in names if not config.services_for_deck(n)]
+            if local_only:
+                notes, cards = _collection_counts_for_decks(local_only)
+                pieces.append(f"— local only: {len(local_only)} deck(s), {notes} notes/{cards} cards")
+            self.route_summary.setText(" &nbsp;·&nbsp; ".join(pieces))
 
     def _status_text(self, service: str, name: str) -> str:
         added, changed = self._pending.get(service, {}).get(name, (0, 0))
@@ -1424,7 +1437,11 @@ class SettingsDialog(QDialog):
         return " ".join(parts)
 
     def _route_cell_text(self, service: str, name: str, checked: bool) -> str:
-        return self._status_text(service, name) if checked else "—"
+        label = consts.SERVICE_LABEL[service]
+        if checked:
+            status = self._status_text(service, name)
+            return f"✓ {label}" if status == "✓" else f"✓ {label} · {status}"
+        return "— local only"
 
     def _summary_text(self) -> str:
         parts = []
@@ -1910,6 +1927,7 @@ class V2FullDiffDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.cellDoubleClicked.connect(self._show_row_detail)
         layout.addWidget(self.table)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -2057,6 +2075,27 @@ class V2FullDiffDialog(QDialog):
         rows = {idx.row() for idx in self.table.selectedIndexes()}
         return [self._rows[r] for r in sorted(rows) if 0 <= r < len(self._rows)]
 
+    def _show_row_detail(self, row: int, _col: int = 0) -> None:
+        if not hasattr(self, "_rows") or row < 0 or row >= len(self._rows):
+            return
+        entry = self._rows[row]
+        try:
+            html = _v2_entry_detail_html(mw.col, self._client, entry)
+        except Exception as err:  # noqa: BLE001
+            html = f"<h3>Failed to build diff</h3><pre>{_esc(str(err))}</pre>"
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"KelmaSync diff: {entry.key}")
+        dlg.resize(920, 680)
+        layout = QVBoxLayout(dlg)
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(False)
+        browser.setHtml(html)
+        layout.addWidget(browser)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        dlg.exec()
+
     def _resolve_entries(self, entries: list, mode: str) -> None:
         """Resolve a batch of entries in the background, reloading once at end."""
         if not entries:
@@ -2155,6 +2194,68 @@ def _entry_preview(record: dict) -> str:
         cs = record.get("checksum", "")[:8]
         return f"{ts} · {cs}" if cs else str(ts)
     return str(record)[:120]
+
+
+def _json_pretty(obj) -> str:
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=2, default=str)
+
+
+def _html_pre_diff(title: str, local_text: str, server_text: str) -> str:
+    l_html, s_html = _render_field_diff(local_text, server_text)
+    return (
+        f"<h3>{_esc(title)}</h3>"
+        "<table width='100%' cellspacing='0' cellpadding='8'>"
+        "<tr><th align='left'>Local</th><th align='left'>Server</th></tr>"
+        f"<tr><td valign='top' width='50%' style='background:#171717'>{l_html}</td>"
+        f"<td valign='top' width='50%' style='background:#171717'>{s_html}</td></tr>"
+        "</table>"
+    )
+
+
+def _v2_entry_detail_html(col, client, entry) -> str:
+    from kelma_sync_v2 import anki_local
+
+    kind = entry.resource
+    title = f"{entry.status}: {entry.key}"
+    parts = [f"<h2>{_esc(title)}</h2>", "<p><b>Double-check before resolving:</b> Accept server overwrites local; Force local overwrites server.</p>"]
+
+    if kind == "guid":
+        local = anki_local.note_record(col, entry.key) if entry.local else None
+        server = client.get_note(entry.key) if entry.server else None
+        lf = (local or {}).get("fields") or []
+        sf = (server or {}).get("fields") or []
+        n = max(len(lf), len(sf))
+        for i in range(n):
+            parts.append(_html_pre_diff(f"Field {i + 1}", str(lf[i] if i < len(lf) else ""), str(sf[i] if i < len(sf) else "")))
+        parts.append(_html_pre_diff("Tags", " ".join((local or {}).get("tags") or []), " ".join((server or {}).get("tags") or [])))
+        parts.append(_html_pre_diff("Notetype", str((local or {}).get("notetype_id", "")), str((server or {}).get("notetype_id", ""))))
+        return "".join(parts)
+
+    if kind == "card_id":
+        cid = int(entry.key)
+        local = anki_local.card_record(col, cid) if entry.local else None
+        server = client.get_card(cid) if entry.server else None
+        for field in ("note_guid", "deck_name", "ord"):
+            parts.append(_html_pre_diff(field, str((local or {}).get(field, "")), str((server or {}).get(field, ""))))
+        parts.append(_html_pre_diff("Scheduling", _json_pretty((local or {}).get("scheduling") or {}), _json_pretty((server or {}).get("scheduling") or {})))
+        return "".join(parts)
+
+    if kind == "notetype_id":
+        ntid = int(entry.key)
+        local = anki_local.notetype_record(col, ntid) if entry.local else None
+        server = client.get_notetype(ntid) if entry.server else None
+        parts.append(_html_pre_diff("Name", str((local or {}).get("name", "")), str((server or {}).get("name", ""))))
+        parts.append(_html_pre_diff("Definition", _json_pretty((local or {}).get("definition") or {}), _json_pretty((server or {}).get("definition") or {})))
+        return "".join(parts)
+
+    if kind == "name":
+        local = anki_local.deck_record(col, entry.key) if entry.local else None
+        server = client.get_deck(entry.key) if entry.server else None
+        parts.append(_html_pre_diff("Deck config", _json_pretty((local or {}).get("config") or {}), _json_pretty((server or {}).get("config") or {})))
+        return "".join(parts)
+
+    parts.append(_html_pre_diff("Raw manifest", _json_pretty(entry.local or {}), _json_pretty(entry.server or {})))
+    return "".join(parts)
 
 
 class V2SettingsDialog(QDialog):

@@ -175,14 +175,28 @@ def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[
     return out
 
 
+def _normalized_deck_config(deck: dict[str, Any]) -> dict[str, Any]:
+    cfg = dict(deck)
+    # Name is the identity; id/mod/usn are local bookkeeping and should not
+    # create conflicts across clients.
+    for key in ("name", "id", "mod", "usn"):
+        cfg.pop(key, None)
+    return cfg
+
+
+def _normalized_notetype_definition(nt: dict[str, Any]) -> dict[str, Any]:
+    definition = dict(nt)
+    # notetype_id/name are stored separately; mod/usn are local bookkeeping.
+    for key in ("id", "mod", "usn"):
+        definition.pop(key, None)
+    return definition
+
+
 def deck_record(col: Collection, name: str) -> dict[str, Any] | None:
     deck = next((d for d in col.decks.all() if d.get("name") == name), None)
     if not deck:
         return None
-    # Store the deck config as Anki exposes it. This includes local ids, but v2
-    # uses the deck name as the identity and treats config as opaque JSON.
-    cfg = dict(deck)
-    cfg.pop("name", None)
+    cfg = _normalized_deck_config(deck)
     return {
         "name": name,
         "config": cfg,
@@ -198,8 +212,7 @@ def deck_manifest(col: Collection, deck_names: list[str] | None = None) -> list[
         name = deck.get("name", "")
         if deck_names and name not in allowed:
             continue
-        cfg = dict(deck)
-        cfg.pop("name", None)
+        cfg = _normalized_deck_config(deck)
         out.append({
             "name": name,
             "checksum": deck_checksum(cfg),
@@ -212,8 +225,8 @@ def notetype_record(col: Collection, notetype_id: int) -> dict[str, Any] | None:
     nt = col.models.get(notetype_id)
     if not nt:
         return None
-    definition = dict(nt)
-    name = definition.get("name", str(notetype_id))
+    name = nt.get("name", str(notetype_id))
+    definition = _normalized_notetype_definition(nt)
     return {
         "notetype_id": int(notetype_id),
         "name": name,
@@ -230,7 +243,7 @@ def notetype_manifest(col: Collection, notetype_ids: set[int] | None = None) -> 
         if notetype_ids is not None and ntid not in notetype_ids:
             continue
         name = nt.get("name", str(ntid))
-        definition = dict(nt)
+        definition = _normalized_notetype_definition(nt)
         out.append({
             "notetype_id": ntid,
             "checksum": notetype_checksum(name, definition),
