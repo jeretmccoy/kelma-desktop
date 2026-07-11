@@ -1805,10 +1805,6 @@ class V2LoginDialog(QDialog):
         font.setBold(True)
         title.setFont(font)
         layout.addWidget(title)
-
-        server = QLabel(endpoint.removeprefix("https://").removeprefix("http://"))
-        server.setStyleSheet("color: palette(mid);")
-        layout.addWidget(server)
         layout.addSpacing(6)
 
         layout.addWidget(QLabel("Email"))
