@@ -235,6 +235,10 @@ def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[
         }
         out.append({
             "card_id": int(cid),
+            "note_guid": guid or "",
+            "ord": int(ord_ or 0),
+            "deck_name": deck_name,
+            "logical_key": f"{guid or ''}:{int(ord_ or 0)}",
             "checksum": card_checksum(guid or "", deck_name, int(ord_ or 0), scheduling),
             "modified_at": iso_from_anki_mod(int(mod or 0)),
         })
@@ -245,7 +249,7 @@ def _normalized_deck_config(deck: dict[str, Any]) -> dict[str, Any]:
     cfg = dict(deck)
     # Name is the identity; id/mod/usn are local bookkeeping and should not
     # create conflicts across clients.
-    for key in ("name", "id", "mod", "usn"):
+    for key in ("name", "id", "mod", "usn", "newToday", "revToday", "lrnToday", "timeToday"):
         cfg.pop(key, None)
     return cfg
 

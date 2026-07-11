@@ -65,6 +65,7 @@ def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], 
         done = 0
         for chunk in _chunks(card_ids):
             pulled = client.batch_pull(cards=chunk).get("cards", [])
+            by_id = {int(c.get("card_id")): c for c in pulled if c.get("card_id")}
             for c in pulled:
                 deck = str(c.get("deck_name", ""))
                 if _in_scope(deck):
@@ -72,6 +73,17 @@ def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], 
                     guid = c.get("note_guid")
                     if guid:
                         scoped_note_guids.add(str(guid))
+            # Enrich manifest entries with stable logical card identity for
+            # cross-collection comparison. card_id is a local creation timestamp
+            # and differs across clients; (note_guid, ord) is the real card key.
+            for m in manifest.get("cards", []):
+                cid = int(m.get("card_id", 0) or 0)
+                c = by_id.get(cid)
+                if c:
+                    m["note_guid"] = c.get("note_guid") or ""
+                    m["ord"] = int(c.get("ord") or 0)
+                    m["deck_name"] = c.get("deck_name") or ""
+                    m["logical_key"] = f"{m['note_guid']}:{m['ord']}"
             done += len(chunk)
             if progress:
                 progress(f"Server scope: {done}/{len(card_ids)} cards checked · {len(scoped_card_ids)} in Kelma decks")

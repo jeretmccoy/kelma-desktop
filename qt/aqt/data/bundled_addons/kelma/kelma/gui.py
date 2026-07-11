@@ -2002,7 +2002,7 @@ class V2FullDiffDialog(QDialog):
                 p("Comparing notes…")
                 notes = _diff_keyed(local.get("notes", []), server.get("notes", []), "guid")
                 p("Comparing cards…")
-                cards = _diff_keyed(local.get("cards", []), server.get("cards", []), "card_id")
+                cards = _diff_keyed(local.get("cards", []), server.get("cards", []), "logical_key")
                 p("Comparing notetypes…")
                 notetypes = _diff_keyed(local.get("notetypes", []), server.get("notetypes", []), "notetype_id")
                 p("Comparing decks…")
@@ -2011,6 +2011,12 @@ class V2FullDiffDialog(QDialog):
                     "notes": notes, "cards": cards, "notetypes": notetypes, "decks": decks,
                     "server_time": server.get("server_time", ""),
                 })()
+                # Default to the first resource with visible changes. Otherwise
+                # a deck-only conflict opens on the Notes tab and looks empty.
+                for idx, entries in enumerate((notes, notetypes, decks, cards)):
+                    if any(e.status != "in-sync" for e in entries):
+                        self.resource_combo.setCurrentIndex(idx)
+                        break
             except Exception as err:  # noqa: BLE001
                 p(f"⚠ Compare failed: {err}")
                 return
@@ -2120,8 +2126,9 @@ class V2FullDiffDialog(QDialog):
                         anki_apply.apply_notetype(mw.col, client.get_notetype(int(entry.key)))
                     elif entry.resource == "name":
                         anki_apply.apply_deck(mw.col, client.get_deck(entry.key))
-                    elif entry.resource == "card_id":
-                        anki_apply.apply_card(mw.col, client.get_card(int(entry.key)))
+                    elif entry.resource in {"card_id", "logical_key"}:
+                        cid = int((entry.server or {}).get("card_id") or entry.key)
+                        anki_apply.apply_card(mw.col, client.get_card(cid))
                 else:  # force
                     if entry.resource == "guid":
                         rec = anki_local.note_record(mw.col, entry.key)
@@ -2143,10 +2150,11 @@ class V2FullDiffDialog(QDialog):
                             client.put_deck(entry.key, config=rec["config"],
                                 client_modified_at=rec["client_modified_at"],
                                 base_checksum="", force=True)
-                    elif entry.resource == "card_id":
-                        rec = anki_local.card_record(mw.col, int(entry.key))
+                    elif entry.resource in {"card_id", "logical_key"}:
+                        cid = int((entry.local or {}).get("card_id") or entry.key)
+                        rec = anki_local.card_record(mw.col, cid)
                         if rec:
-                            client.put_card(int(entry.key),
+                            client.put_card(cid,
                                 note_guid=rec["note_guid"], deck_name=rec["deck_name"],
                                 ord=rec["ord"], scheduling=rec["scheduling"],
                                 client_modified_at=rec["client_modified_at"])
@@ -2183,10 +2191,10 @@ def _diff_local_preview(entry) -> str:
 
 
 def _build_deck_map(col, resource_key: str) -> dict[str, str]:
-    """Build a {key: deck_name} map for notes (by guid) or cards (by card_id)."""
+    """Build a {diff key: deck_name} map for notes/cards/decks."""
     out: dict[str, str] = {}
     try:
-        if resource_key == "guid":
+        if resource_key in {"notes", "guid"}:
             rows = col.db.all(
                 "SELECT DISTINCT n.guid, d.name "
                 "FROM notes n JOIN cards c ON c.nid = n.id "
@@ -2194,12 +2202,17 @@ def _build_deck_map(col, resource_key: str) -> dict[str, str]:
             )
             for guid, name in rows:
                 out[str(guid)] = str(name)
-        elif resource_key == "card_id":
+        elif resource_key in {"cards", "card_id", "logical_key"}:
             rows = col.db.all(
-                "SELECT c.id, d.name FROM cards c JOIN decks d ON d.id = c.did"
+                "SELECT n.guid, c.ord, d.name FROM cards c "
+                "JOIN notes n ON n.id = c.nid JOIN decks d ON d.id = c.did "
+                "WHERE n.guid != ''"
             )
-            for cid, name in rows:
-                out[str(cid)] = str(name)
+            for guid, ord_, name in rows:
+                out[f"{guid}:{int(ord_ or 0)}"] = str(name)
+        elif resource_key in {"decks", "name"}:
+            for d in col.decks.all_names_and_ids():
+                out[str(d.name)] = str(d.name)
     except Exception:  # noqa: BLE001
         pass
     return out
@@ -2257,10 +2270,11 @@ def _v2_entry_detail_html(col, client, entry) -> str:
         parts.append(_html_pre_diff("Notetype", str((local or {}).get("notetype_id", "")), str((server or {}).get("notetype_id", ""))))
         return "".join(parts)
 
-    if kind == "card_id":
-        cid = int(entry.key)
-        local = anki_local.card_record(col, cid) if entry.local else None
-        server = client.get_card(cid) if entry.server else None
+    if kind in {"card_id", "logical_key"}:
+        local_cid = int((entry.local or {}).get("card_id") or entry.key)
+        server_cid = int((entry.server or {}).get("card_id") or entry.key)
+        local = anki_local.card_record(col, local_cid) if entry.local else None
+        server = client.get_card(server_cid) if entry.server else None
         for field in ("note_guid", "deck_name", "ord"):
             parts.append(_html_pre_diff(field, str((local or {}).get(field, "")), str((server or {}).get(field, ""))))
         parts.append(_html_pre_diff("Scheduling", _json_pretty((local or {}).get("scheduling") or {}), _json_pretty((server or {}).get("scheduling") or {})))
