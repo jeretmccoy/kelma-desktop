@@ -4,6 +4,7 @@ plus integration with the Sync button."""
 from __future__ import annotations
 
 import difflib
+import sys
 from collections import Counter
 from concurrent.futures import Future
 from datetime import datetime
@@ -1610,9 +1611,22 @@ def _install_native_sync_guard() -> None:
 # -----------------------------------------------------------------------------
 # KelmaSync v2 experimental note-only sync
 # -----------------------------------------------------------------------------
+def _ensure_v2_vendor() -> None:
+    """Expose the vendored .kelma_sync_v2 package as top-level kelma_sync_v2.
+
+    We intentionally do NOT add the addon directory to sys.path, because this
+    addon has files like inspect.py that can shadow Python stdlib modules.
+    """
+    if "kelma_sync_v2" in sys.modules:
+        return
+    from . import kelma_sync_v2 as vendored
+    sys.modules["kelma_sync_v2"] = vendored
+
+
 def _v2_client_or_login():
     """Return a V2Client, prompting for credentials if no token is saved."""
     try:
+        _ensure_v2_vendor()
         from kelma_sync_v2.client import V2Client
     except Exception as err:  # noqa: BLE001
         tooltip(f"KelmaSync client package is not installed: {err}")
