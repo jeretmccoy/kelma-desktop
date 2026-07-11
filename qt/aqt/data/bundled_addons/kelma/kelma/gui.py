@@ -1919,13 +1919,14 @@ class V2FullDiffDialog(QDialog):
         self.status_label = QLabel("Loading…")
         layout.addWidget(self.status_label)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Key", "Status", "Local", "Server", "Actions"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Key", "Deck", "Status", "Local", "Server", "Actions"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.cellDoubleClicked.connect(self._show_row_detail)
         layout.addWidget(self.table)
@@ -2054,15 +2055,17 @@ class V2FullDiffDialog(QDialog):
         # doesn't freeze Qt. The batch actions still operate on all changed.
         cap = 2000
         shown = changed[:cap]
+        deck_map = _build_deck_map(mw.col, self._resource_key())
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
         try:
             self.table.setRowCount(len(shown))
             for i, entry in enumerate(shown):
                 self.table.setItem(i, 0, QTableWidgetItem(entry.key[:60]))
-                self.table.setItem(i, 1, QTableWidgetItem(entry.status))
-                self.table.setItem(i, 2, QTableWidgetItem(_diff_local_preview(entry)))
-                self.table.setItem(i, 3, QTableWidgetItem(_diff_server_preview(entry)))
+                self.table.setItem(i, 1, QTableWidgetItem(deck_map.get(entry.key, "—")))
+                self.table.setItem(i, 2, QTableWidgetItem(entry.status))
+                self.table.setItem(i, 3, QTableWidgetItem(_diff_local_preview(entry)))
+                self.table.setItem(i, 4, QTableWidgetItem(_diff_server_preview(entry)))
         finally:
             self.table.setUpdatesEnabled(True)
         if len(changed) > cap:
@@ -2177,6 +2180,29 @@ def _diff_local_preview(entry) -> str:
     if l is None:
         return "(missing)"
     return _entry_preview(l)
+
+
+def _build_deck_map(col, resource_key: str) -> dict[str, str]:
+    """Build a {key: deck_name} map for notes (by guid) or cards (by card_id)."""
+    out: dict[str, str] = {}
+    try:
+        if resource_key == "guid":
+            rows = col.db.all(
+                "SELECT DISTINCT n.guid, d.name "
+                "FROM notes n JOIN cards c ON c.nid = n.id "
+                "JOIN decks d ON d.id = c.did WHERE n.guid != ''"
+            )
+            for guid, name in rows:
+                out[str(guid)] = str(name)
+        elif resource_key == "card_id":
+            rows = col.db.all(
+                "SELECT c.id, d.name FROM cards c JOIN decks d ON d.id = c.did"
+            )
+            for cid, name in rows:
+                out[str(cid)] = str(name)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def _diff_server_preview(entry) -> str:
