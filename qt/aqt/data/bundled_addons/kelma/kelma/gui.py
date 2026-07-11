@@ -3428,8 +3428,18 @@ def _toggle_feature(key: str, checked: bool) -> None:
 
 def setup() -> None:
     """Entry point, called once after the profile/collection is ready."""
-    _build_menu()
-    _install_sync_hook()
-    deckbadges.setup()
+    # Each step is independent so a failure in one doesn't break the others.
+    # Most importantly, deck badges must survive even if the menu/hook setup
+    # throws — otherwise a GUI regression hides the green sync indicators.
+    for label, fn in (
+        ("menu", _build_menu),
+        ("sync hook", _install_sync_hook),
+        ("deck badges", deckbadges.setup),
+    ):
+        try:
+            fn()
+        except Exception as err:  # noqa: BLE001
+            import traceback
+            print(f"Kelma setup error ({label}): {err}\n{traceback.format_exc()}")
     # Do not install the old native-sync guard: v2 dual sync intentionally runs
     # KelmaSync first, then AnkiWeb's native sync.
