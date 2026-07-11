@@ -5,11 +5,13 @@ media by filename inside field HTML or [sound:...] tags.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
+from itertools import islice
 import mimetypes
 import re
+import time
 from typing import Iterable
 
 from anki.collection import Collection
@@ -85,32 +87,47 @@ def sync_media_once(col: Collection, client: V2Client, server_manifest: dict | N
 
     def upload_one(item: tuple[str, Path, int]) -> tuple[str, int]:
         filename, path, size = item
-        client.put_media(
-            filename,
-            path.read_bytes(),
-            mimetypes.guess_type(filename)[0] or "application/octet-stream",
-        )
-        return filename, size
+        data = path.read_bytes()
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                client.put_media(filename, data, content_type)
+                return filename, size
+            except Exception as err:  # noqa: BLE001
+                last_error = err
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+        assert last_error is not None
+        raise last_error
 
-    # R2/Cloudflare spends more time on request latency than transferring these
-    # mostly-small Anki media files. Use a wide but bounded pool for the initial
-    # multi-thousand-file upload; each worker holds at most one file in memory.
+    # Keep only 50 futures in flight. Do not enqueue the entire collection:
+    # previously, one early request error stopped progress reporting while the
+    # executor silently drained thousands of already-queued uploads.
+    upload_iter = iter(uploads)
     with ThreadPoolExecutor(max_workers=50, thread_name_prefix="kelma-media") as pool:
-        futures = [pool.submit(upload_one, item) for item in uploads]
-        for future in as_completed(futures):
-            filename, size = future.result()
-            server_files.add(filename)
-            result.uploaded += 1
-            uploaded_bytes += size
-            if progress and (
-                result.uploaded == 1
-                or result.uploaded == upload_total
-                or result.uploaded % 100 == 0
-            ):
-                progress(
-                    f"Media upload {result.uploaded}/{upload_total} · "
-                    f"{_format_mib(uploaded_bytes)} / {_format_mib(upload_bytes_total)}"
-                )
+        pending = {pool.submit(upload_one, item) for item in islice(upload_iter, 50)}
+        while pending:
+            completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                filename, size = future.result()
+                server_files.add(filename)
+                result.uploaded += 1
+                uploaded_bytes += size
+                if progress and (
+                    result.uploaded == 1
+                    or result.uploaded == upload_total
+                    or result.uploaded % 100 == 0
+                ):
+                    progress(
+                        f"Media upload {result.uploaded}/{upload_total} · "
+                        f"{_format_mib(uploaded_bytes)} / {_format_mib(upload_bytes_total)}"
+                    )
+                try:
+                    item = next(upload_iter)
+                except StopIteration:
+                    continue
+                pending.add(pool.submit(upload_one, item))
 
     if progress:
         progress("Media: scanning local media directory…")
