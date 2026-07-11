@@ -3147,11 +3147,18 @@ class V2JointStateDialog(QDialog):
 
 
 def _v2_sync_menu() -> None:
-    """Open the single joint-state workspace from Anki's Sync button."""
+    """Open the sync popup from Anki's Sync button.
+
+    For KelmaDesktop (kelmasync_only), this is a simple KelmaSync sync menu.
+    For the dual-sync Anki plugin, it opens the joint-state workspace.
+    """
     if _V2_ACTIVE_ACTION:
         tooltip(_v2_active_message() or "A sync operation is already running.")
         return
-    V2JointStateDialog(mw).exec()
+    if config.kelmasync_only():
+        _v2_old_staged_menu()
+    else:
+        V2JointStateDialog(mw).exec()
 
 
 def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
