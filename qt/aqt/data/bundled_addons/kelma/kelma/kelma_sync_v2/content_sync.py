@@ -48,6 +48,14 @@ def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], 
     referenced by scoped cards.
     """
     allowed = set(deck_names)
+
+    def _in_scope(deck: str) -> bool:
+        # Match the deck itself OR any of its subdecks ("Parent::Child"),
+        # consistent with local deck scoping which is prefix-based.
+        if deck in allowed:
+            return True
+        return any(deck.startswith(name + "::") for name in allowed)
+
     card_ids = [int(c["card_id"]) for c in manifest.get("cards", []) if c.get("card_id")]
     scoped_card_ids: set[int] = set()
     scoped_note_guids: set[str] = set()
@@ -59,7 +67,7 @@ def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], 
             pulled = client.batch_pull(cards=chunk).get("cards", [])
             for c in pulled:
                 deck = str(c.get("deck_name", ""))
-                if deck in allowed:
+                if _in_scope(deck):
                     scoped_card_ids.add(int(c.get("card_id")))
                     guid = c.get("note_guid")
                     if guid:
@@ -70,7 +78,7 @@ def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], 
     scoped = dict(manifest)
     scoped["cards"] = [c for c in manifest.get("cards", []) if int(c.get("card_id", 0)) in scoped_card_ids]
     scoped["notes"] = [n for n in manifest.get("notes", []) if str(n.get("guid", "")) in scoped_note_guids]
-    scoped["decks"] = [d for d in manifest.get("decks", []) if str(d.get("name", "")) in allowed]
+    scoped["decks"] = [d for d in manifest.get("decks", []) if _in_scope(str(d.get("name", "")))]
     # Keep notetypes broad enough for pulled scoped notes; local notetypes are
     # independently restricted to selected local notes.
     return scoped

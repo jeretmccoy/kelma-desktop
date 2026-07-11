@@ -109,5 +109,13 @@ def deck_checksum(config: dict) -> str:
 
 
 def card_checksum(note_guid: str, deck_name: str, ord_: int, scheduling: dict) -> str:
-    """Checksum for card content/scheduling, not server timestamps."""
-    return _checksum_parts_py([note_guid, deck_name, int(ord_ or 0), scheduling or {}])
+    """Structural checksum for a card: note, deck, and template ordinal only.
+
+    Scheduling is intentionally excluded. The `due` field (and others) is
+    collection-relative — it is measured in days since each collection's
+    creation date, so two collections with different creation dates always have
+    different scheduling even for identical review state. Including scheduling
+    here produced thousands of false conflicts. Scheduling propagates separately
+    via newest-wins on the server.
+    """
+    return _checksum_parts_py([note_guid, deck_name, int(ord_ or 0)])
