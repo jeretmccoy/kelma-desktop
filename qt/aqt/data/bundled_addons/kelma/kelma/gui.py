@@ -4,8 +4,10 @@ plus integration with the Sync button."""
 from __future__ import annotations
 
 import difflib
+import re
 import sys
 from collections import Counter
+from pathlib import Path
 from concurrent.futures import Future
 from datetime import datetime
 
@@ -82,6 +84,72 @@ _DIFF_PRIORITY = {
     "server-only": 2,
     "in-sync": 3,
 }
+
+_MEDIA_IMG_RE = re.compile(r'''(?i)<img\b[^>]*\bsrc=["']([^"']+)["']''')
+_MEDIA_SOUND_RE = re.compile(r'''\[sound:([^\]]+)\]''')
+
+
+def _fmt_gb(nbytes: int) -> str:
+    return f"{nbytes / (1024 ** 3):.2f} GB"
+
+
+def _clean_media_name(name: str) -> str:
+    name = str(name or "").strip().replace("%20", " ")
+    if not name or name.startswith(("http://", "https://", "data:")):
+        return ""
+    if "/" in name or "\\" in name or name in {".", ".."}:
+        return ""
+    return name
+
+
+def _deck_ids_for_names(names: list[str]) -> list[int]:
+    wanted = set(names)
+    ids: list[int] = []
+    for d in mw.col.decks.all_names_and_ids():
+        if d.name in wanted:
+            ids.append(int(d.id))
+    return ids
+
+
+def _referenced_media_bytes_for_decks(deck_names: list[str]) -> int:
+    dids = _deck_ids_for_names(deck_names)
+    if not dids:
+        return 0
+    marks = ",".join("?" for _ in dids)
+    rows = mw.col.db.all(
+        f"""
+        SELECT DISTINCT n.flds
+        FROM notes n JOIN cards c ON c.nid = n.id
+        WHERE c.did IN ({marks})
+        """,
+        *dids,
+    )
+    names: set[str] = set()
+    for (flds,) in rows:
+        text = str(flds or "")
+        for m in _MEDIA_IMG_RE.finditer(text):
+            clean = _clean_media_name(m.group(1))
+            if clean:
+                names.add(clean)
+        for m in _MEDIA_SOUND_RE.finditer(text):
+            clean = _clean_media_name(m.group(1))
+            if clean:
+                names.add(clean)
+    media_dir = Path(mw.col.media.dir())
+    total = 0
+    for name in names:
+        try:
+            p = (media_dir / name).resolve()
+            root = media_dir.resolve()
+            if (root in p.parents or p == root) and p.is_file():
+                total += p.stat().st_size
+        except Exception:  # noqa: BLE001
+            pass
+    return total
+
+
+def _service_media_bytes(service: str, deck_names: list[str]) -> int:
+    return _referenced_media_bytes_for_decks(config.decks_for_service(service, deck_names))
 
 
 def _esc(text: str) -> str:
@@ -1286,21 +1354,33 @@ class SettingsDialog(QDialog):
     # -- deck status ----------------------------------------------------------
     def _compute_status(self) -> None:
         names = [d.name for d in mw.col.decks.all_names_and_ids()]
+        self._deck_names = names
         self._pending = {
             s: state.pending_for_service(mw.col, names, s) for s in consts.SERVICES
         }
         self._deletions = state.pending_deletions(mw.col)
+        self._service_bytes = {s: _service_media_bytes(s, names) for s in config.ui_services()}
+        labels = ["Deck", "KelmaSync", "AnkiWeb"]
+        for s, col in _COL.items():
+            if s in self._service_bytes:
+                labels[col] = f"{consts.SERVICE_LABEL[s]}\n{_fmt_gb(self._service_bytes[s])}"
+        self.table.setHorizontalHeaderLabels(labels)
 
     def _status_text(self, service: str, name: str) -> str:
         added, changed = self._pending.get(service, {}).get(name, (0, 0))
         if not added and not changed:
-            return "✓"
+            return "in sync"
         parts = []
         if added:
             parts.append(f"+{added}")
         if changed:
             parts.append(f"~{changed}")
         return " ".join(parts)
+
+    def _route_cell_text(self, service: str, name: str, checked: bool) -> str:
+        if checked:
+            return f"✓ {self._status_text(service, name)}"
+        return "—"
 
     def _summary_text(self) -> str:
         parts = []
@@ -1313,9 +1393,11 @@ class SettingsDialog(QDialog):
             ndirty = sum(1 for a, c in pend.values() if a or c)
             meta = state.last_sync(s)
             when = _ago(meta["at"]) if meta and meta.get("at") else "never"
+            decks = len(config.decks_for_service(s, getattr(self, "_deck_names", [])))
+            gb = _fmt_gb(getattr(self, "_service_bytes", {}).get(s, 0))
             parts.append(
-                f"<b>{consts.SERVICE_LABEL[s]}</b>: {ndirty} deck(s) pending "
-                f"(+{ta} ~{tc}), synced {when}"
+                f"<b>{consts.SERVICE_LABEL[s]}</b>: {decks} deck(s), {gb}; "
+                f"{ndirty} deck(s) pending (+{ta} ~{tc}), synced {when}"
             )
         if self._deletions:
             parts.append(f"{self._deletions} deletion(s) pending")
@@ -1329,7 +1411,7 @@ class SettingsDialog(QDialog):
             for service, col in _COL.items():
                 item = self.table.item(row, col)
                 checked = item.checkState() == Qt.CheckState.Checked
-                item.setText(self._status_text(service, name) if checked else "")
+                item.setText(self._route_cell_text(service, name, checked))
         self._suppress = False
         self.summary.setText(self._summary_text())
 
@@ -1352,7 +1434,7 @@ class SettingsDialog(QDialog):
                 item.setCheckState(
                     Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
                 )
-                item.setText(self._status_text(service, name) if checked else "")
+                item.setText(self._route_cell_text(service, name, checked))
                 self.table.setItem(row, col, item)
 
     def _apply_filter(self, text: str) -> None:
@@ -1365,9 +1447,13 @@ class SettingsDialog(QDialog):
         col = _COL[service]
         check = Qt.CheckState.Checked if value else Qt.CheckState.Unchecked
         self._suppress = True
+        service = next(s for s, c in _COL.items() if c == col)
         for row in range(self.table.rowCount()):
             if not self.table.isRowHidden(row):
-                self.table.item(row, col).setCheckState(check)
+                item = self.table.item(row, col)
+                item.setCheckState(check)
+                name = self.table.item(row, 0).text()
+                item.setText(self._route_cell_text(service, name, value))
         self._suppress = False
         self._anchor[col] = None
 
@@ -1383,6 +1469,8 @@ class SettingsDialog(QDialog):
         check = item.checkState()
         anchor = self._anchor.get(col)
         shift = QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier
+        service = next(s for s, c in _COL.items() if c == col)
+        checked = check == Qt.CheckState.Checked
         if shift and anchor is not None and anchor != row:
             lo, hi = sorted((anchor, row))
             self._suppress = True
@@ -1392,7 +1480,11 @@ class SettingsDialog(QDialog):
                 cell = self.table.item(r, col)
                 if cell is not None:
                     cell.setCheckState(check)
+                    name = self.table.item(r, 0).text()
+                    cell.setText(self._route_cell_text(service, name, checked))
             self._suppress = False
+        name = self.table.item(row, 0).text()
+        item.setText(self._route_cell_text(service, name, checked))
         self._anchor[col] = row
 
     def _save(self) -> None:
@@ -1444,14 +1536,16 @@ def _service_line_html(service: str, deck_names: list[str], cfg: dict) -> str:
     if not config.has_credentials(service):
         body = "<i>not logged in</i> — sign in or create an account"
     else:
-        decks = len(config.decks_for_service(service, deck_names))
+        service_decks = config.decks_for_service(service, deck_names)
+        decks = len(service_decks)
+        gb = _fmt_gb(_referenced_media_bytes_for_decks(service_decks))
         user = cfg["kelmasync_user"] if service == consts.KELMA else cfg["ankiweb_user"]
         extra = ""
         if service == consts.KELMA:
             extra = f" · {cfg.get('kelmasync_path', consts.PATH_AUTO)}"
         meta = state.last_sync(service)
         when = _ago(meta["at"]) if meta and meta.get("at") else "never"
-        body = f"{user or '?'} · {decks} decks{extra} · synced {when}"
+        body = f"{user or '?'} · {decks} decks · {gb}{extra} · synced {when}"
     accent = branding.accent()
     return (
         f'<span style="color:{accent}; font-weight:bold;">{label}</span>'
@@ -2255,11 +2349,18 @@ def _v2_sync_menu() -> None:
     status = "logged in" if cfg.get("v2_token") else "not logged in"
     endpoint = cfg.get("v2_url") or "http://localhost:8081"
     user = cfg.get("v2_username") or "(no username saved)"
+    all_decks = [d.name for d in mw.col.decks.all_names_and_ids()]
+    kelma_decks = config.decks_for_service(consts.KELMA, all_decks)
+    ankiweb_decks = config.decks_for_service(consts.ANKIWEB, all_decks)
+    kelma_gb = _fmt_gb(_referenced_media_bytes_for_decks(kelma_decks))
+    ankiweb_gb = _fmt_gb(_referenced_media_bytes_for_decks(ankiweb_decks))
     active = _v2_active_message()
     active_html = f"<br><span style='color:#d98'>⚠ {active}</span>" if active else ""
     status_label = QLabel(
         f"<b>{status}</b> · {user}<br>"
-        f"<span style='color:#888'>{endpoint}</span>"
+        f"<span style='color:#888'>{endpoint}</span><br>"
+        f"KelmaSync: ✓ {len(kelma_decks)} deck(s), {kelma_gb} · "
+        f"AnkiWeb: ✓ {len(ankiweb_decks)} deck(s), {ankiweb_gb}"
         f"{active_html}"
     )
     status_wrap = QWidget()
