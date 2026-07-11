@@ -189,6 +189,20 @@ def _normalized_notetype_definition(nt: dict[str, Any]) -> dict[str, Any]:
     # notetype_id/name are stored separately; mod/usn are local bookkeeping.
     for key in ("id", "mod", "usn"):
         definition.pop(key, None)
+    # Deep-normalize: remove auto-generated ids from nested field/template
+    # objects. These differ per-client and cause false conflicts.
+    for arr_key in ("flds", "tmpls"):
+        arr = definition.get(arr_key)
+        if isinstance(arr, list):
+            new_arr = []
+            for item in arr:
+                if isinstance(item, dict):
+                    cleaned = dict(item)
+                    cleaned.pop("id", None)
+                    new_arr.append(cleaned)
+                else:
+                    new_arr.append(item)
+            definition[arr_key] = new_arr
     return definition
 
 
