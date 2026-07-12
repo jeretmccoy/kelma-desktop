@@ -3075,15 +3075,16 @@ class V2JointStateDialog(QDialog):
             ankiweb = anki_local.local_manifest(remote, deck_names=deck_names)
             local = anki_local.local_manifest(mw.col, deck_names=deck_names)
             kelma = _scope_server_manifest_to_decks(client, client.manifest(), deck_names)
-            # Only compare notetypes used by scoped notes on each side. Server-only
-            # notetypes from other clients' decks are not our conflict to resolve.
-            local_ntids = {int(nt["notetype_id"]) for nt in local["notetypes"]}
-            ankiweb_ntids = {int(nt["notetype_id"]) for nt in ankiweb["notetypes"]}
-            kelma_ntids = {int(nt["notetype_id"]) for nt in kelma.get("notetypes", [])}
-            comparison_ntids = local_ntids | ankiweb_ntids | kelma_ntids
+            # Only compare notetypes used by scoped notes on local or AnkiWeb.
+            # Server note manifests don't carry notetype_id, so derive the
+            # comparison set from local + AnkiWeb and filter all three sides.
+            comparison_ntids = {
+                int(nt["notetype_id"])
+                for nt in local["notetypes"] + ankiweb["notetypes"]
+            }
             local["notetypes"] = [nt for nt in local["notetypes"] if int(nt["notetype_id"]) in comparison_ntids]
             ankiweb["notetypes"] = [nt for nt in ankiweb["notetypes"] if int(nt["notetype_id"]) in comparison_ntids]
-            kelma["notetypes"] = [nt for nt in kelma.get("notetypes", []) if int(nt["notetype_id"]) in comparison_ntids]
+            kelma["notetypes"] = [nt for nt in kelma.get("notetypes", []) if int(nt.get("notetype_id", 0)) in comparison_ntids]
             return temp_dir, remote, local, ankiweb, kelma
 
         def done(future: Future) -> None:
