@@ -254,7 +254,12 @@ def sync_content_once(
     )
     local_deletes = _limit_deletes_to_scoped_server(local_deletes, manifest)
     delete_total = sum(len(values) for values in local_deletes.values())
-    if delete_total > 100 and not allow_large_deletes:
+    content_deletes = len(local_deletes.get("notes", [])) + len(local_deletes.get("cards", []))
+    known_content = len(snapshot.get("notes", [])) + len(snapshot.get("cards", []))
+    structural_deletes = bool(local_deletes.get("decks") or local_deletes.get("notetypes"))
+    disproportionate = content_deletes > max(10, int(known_content * 0.10))
+    needs_approval = delete_total > 100 or structural_deletes or disproportionate
+    if needs_approval and not allow_large_deletes:
         raise DeletionSafetyError(local_deletes)
     if local_deletes:
         _push_local_deletes(col, client, local_deletes, progress=progress)
