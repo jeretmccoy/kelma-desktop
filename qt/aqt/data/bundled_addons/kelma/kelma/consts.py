@@ -23,6 +23,10 @@ SHADOW_FILENAME = {
 }
 
 DEFAULT_KELMA_URL = "https://sync.kelma.tech/"
+# Canonical KelmaSync v2 REST hostname. The old ankiai.tech alias remains live
+# for already-installed clients, but all new/default traffic uses kelma.tech.
+DEFAULT_V2_URL = "https://sync2.kelma.tech"
+LEGACY_V2_URLS = {"https://sync2.ankiai.tech"}
 
 # Account creation is web-based (branded sign-up, email verification, etc.), not
 # done in-client — the login dialog links out to these. KelmaSync accounts are
@@ -34,12 +38,9 @@ SIGNUP_URL = {
     ANKIWEB: ANKIWEB_SIGNUP_URL,
 }
 
-# KelmaSync sync paths.
-#   standard  – incremental: fingerprint the collection and only move the decks
-#               that changed since the last sync (fast).
-#   legacy    – move every routed deck every time; maximal compatibility with
-#               AnkiMobile and stock Anki sync servers (slower).
-#   auto      – probe the server and pick one (manual override always wins).
+# KelmaSync compatibility modes. Reconciliation remains routed and
+# change-detected in every mode; "legacy" records that a server advertises
+# stock-compatible behavior.
 # AnkiWeb is always legacy (real AnkiWeb only speaks the stock protocol).
 PATH_AUTO = "auto"
 PATH_STANDARD = "standard"
@@ -48,5 +49,5 @@ PATH_MODES = (PATH_AUTO, PATH_STANDARD, PATH_LEGACY)
 PATH_LABEL = {
     PATH_AUTO: "Auto (detect from server)",
     PATH_STANDARD: "Standard — incremental (only changed decks)",
-    PATH_LEGACY: "Legacy — full every time (AnkiMobile-safe)",
+    PATH_LEGACY: "Legacy-compatible server",
 }

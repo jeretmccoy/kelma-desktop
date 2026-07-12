@@ -39,7 +39,13 @@ def get() -> dict[str, Any]:
     cfg.setdefault("kelmasync_only", False)
     # KelmaSync v2 experimental REST client config. Kept separate from v1 hkey
     # auth so the existing sync path remains untouched.
-    cfg.setdefault("v2_url", "https://sync2.ankiai.tech")
+    cfg.setdefault("v2_url", consts.DEFAULT_V2_URL)
+    current_v2_url = str(cfg.get("v2_url") or "").rstrip("/")
+    if not current_v2_url or current_v2_url in consts.LEGACY_V2_URLS:
+        # Both hostnames reach the same service/token database. Migrate the URL
+        # without discarding the saved token, so existing clients do not need to
+        # sign in again.
+        cfg["v2_url"] = consts.DEFAULT_V2_URL
     cfg.setdefault("v2_username", "")
     cfg.setdefault("v2_token", "")
     cfg.setdefault("v2_client_id", "")

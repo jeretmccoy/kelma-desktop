@@ -1922,23 +1922,32 @@ class V2LoginDialog(QDialog):
         self.username_value = ""
         self.client_label = "KelmaDesktop" if cfg.get("kelmasync_only") else "Anki plugin"
 
-        self.setWindowTitle("KelmaSync Sign In")
+        self.setWindowTitle("Sign in to Kelma Desktop")
         self.setModal(True)
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(420)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 16)
         layout.setSpacing(8)
 
-        title = QLabel("KelmaSync")
+        title = QLabel("Sign in with Kelma Immersion")
         font = title.font()
         font.setPointSize(15)
         font.setBold(True)
         title.setFont(font)
         layout.addWidget(title)
+
+        account_help = QLabel(
+            'Use the same email and password as your '
+            '<a href="https://kelma.tech">Kelma Immersion account</a>. '
+            "This is not an AnkiWeb login."
+        )
+        account_help.setOpenExternalLinks(True)
+        account_help.setWordWrap(True)
+        layout.addWidget(account_help)
         layout.addSpacing(6)
 
-        layout.addWidget(QLabel("Email"))
+        layout.addWidget(QLabel("Kelma Immersion email"))
         self.email = QLineEdit(str(cfg.get("v2_username", "")))
         self.email.setPlaceholderText("you@example.com")
         layout.addWidget(self.email)
@@ -1964,7 +1973,7 @@ class V2LoginDialog(QDialog):
 
         layout.addSpacing(4)
         buttons = QDialogButtonBox()
-        self.sign_in = buttons.addButton("Sign In", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.sign_in = buttons.addButton("Sign In to Kelma", QDialogButtonBox.ButtonRole.AcceptRole)
         self.sign_in.setDefault(True)
         cancel = buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
         self.sign_in.clicked.connect(self._sign_in)
@@ -1975,7 +1984,10 @@ class V2LoginDialog(QDialog):
 
     def _show_error(self, message: str) -> None:
         clean = re.sub(r"^.*?:\s*", "", str(message)).strip()
-        self.error.setText(clean or "Sign-in failed. Check your email and password.")
+        self.error.setText(
+            clean
+            or "Sign-in failed. Use the email and password for your Kelma Immersion account."
+        )
         self.error.show()
         self.password.selectAll()
         self.password.setFocus()
@@ -2009,9 +2021,11 @@ def _v2_client_or_login():
         return None
 
     cfg = config.get()
-    endpoint = cfg.get("v2_url") or "https://sync2.ankiai.tech"
+    endpoint = cfg.get("v2_url") or consts.DEFAULT_V2_URL
     token = cfg.get("v2_token") or ""
-    client = V2Client(endpoint, token=token, timeout=12)
+    # Login delegates to Kelma Immersion and may include a live account-status
+    # check, so do not use the old 12-second UI timeout.
+    client = V2Client(endpoint, token=token, timeout=30)
     if token:
         return client
 
@@ -2608,7 +2622,7 @@ class V2SettingsDialog(QDialog):
         grid = QGridLayout()
         layout.addLayout(grid)
 
-        self.endpoint = QLineEdit(cfg.get("v2_url", "http://localhost:8081"))
+        self.endpoint = QLineEdit(cfg.get("v2_url", consts.DEFAULT_V2_URL))
         self.username = QLineEdit(cfg.get("v2_username", ""))
         self.label = QLineEdit(cfg.get("v2_client_label", "Anki plugin"))
         self.last = QLabel(cfg.get("v2_last_server_time", "") or "(none)")
@@ -2616,7 +2630,7 @@ class V2SettingsDialog(QDialog):
 
         for row, (name, widget) in enumerate([
             ("Endpoint", self.endpoint),
-            ("Username", self.username),
+            ("Kelma Immersion email", self.username),
             ("Client label", self.label),
             ("Token", self.token),
             ("Last server time", self.last),
@@ -2648,7 +2662,7 @@ class V2SettingsDialog(QDialog):
 
     def _save(self) -> None:
         cfg = config.get()
-        cfg["v2_url"] = self.endpoint.text().strip() or "http://localhost:8081"
+        cfg["v2_url"] = self.endpoint.text().strip() or consts.DEFAULT_V2_URL
         cfg["v2_username"] = self.username.text().strip()
         cfg["v2_client_label"] = self.label.text().strip() or "Anki plugin"
         cfg["v2_allow_large_deletes"] = self.allow_large_deletes.isChecked()
@@ -4039,11 +4053,17 @@ def setup() -> None:
     # Each step is independent so a failure in one doesn't break the others.
     # Most importantly, deck badges must survive even if the menu/hook setup
     # throws — otherwise a GUI regression hides the green sync indicators.
-    for label, fn in (
+    steps = [
         ("menu", _build_menu),
         ("sync hook", _install_sync_hook),
         ("deck badges", deckbadges.setup),
-    ):
+    ]
+    if config.kelmasync_only():
+        # KelmaDesktop must never fall through to Anki's native AnkiWeb login or
+        # auto-sync path. All Desktop synchronization is KelmaSync v2-only.
+        steps.insert(2, ("native AnkiWeb guard", _install_native_sync_guard))
+
+    for label, fn in steps:
         try:
             fn()
         except Exception as err:  # noqa: BLE001

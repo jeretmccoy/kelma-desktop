@@ -10,6 +10,7 @@
   "wrap_sync_button": true,
   "block_native_sync": true,
   "backup_before_sync": true,
+  "v2_url": "https://sync2.kelma.tech",
   "deck_routing": {},
   "features": {},
   "kelmasync_only": true
