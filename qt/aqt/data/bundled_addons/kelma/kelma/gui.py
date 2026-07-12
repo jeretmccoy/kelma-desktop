@@ -2453,6 +2453,13 @@ class V2FullDiffDialog(QDialog):
                 self.status_label.setText(f"Resolve failed: {err}")
                 return
             tooltip(f"Resolved {n} item(s).")
+            # The resolved items now match KelmaSync (either side won — both
+            # converged). Reset the badge baseline so pulled/pushed data does
+            # not appear as +N pending local changes.
+            try:
+                _mark_service_synced_for_badges(consts.KELMA)
+            except Exception:  # noqa: BLE001
+                pass
             if self._staged_mode:
                 for entry in entries:
                     entry.status = "in-sync"

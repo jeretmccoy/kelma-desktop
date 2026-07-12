@@ -40,10 +40,17 @@ def load() -> dict:
 
 def save(state: dict) -> None:
     try:
-        with open(_path(), "w", encoding="utf-8") as f:
+        path = _path()
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f)
-    except Exception:  # noqa: BLE001 - persistence is best-effort
-        pass
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception as err:  # noqa: BLE001 - persistence is best-effort
+        # Never crash the caller, but do NOT hide the failure: a silently
+        # missing state file makes every card look like a pending local change.
+        print(f"Kelma state save failed: {err}")
 
 
 # -- per-service deck baselines ----------------------------------------------
