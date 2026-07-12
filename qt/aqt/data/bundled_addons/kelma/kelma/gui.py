@@ -1888,7 +1888,16 @@ def _ensure_v2_vendor() -> None:
     sys.modules["kelma_sync_v2"] = vendored
 
 
-def _v2_kelma_deck_names() -> list[str]:
+def _v2_kelma_deck_names() -> list[str] | None:
+    """Deck names to sync with KelmaSync.
+
+    KelmaDesktop (kelmasync_only) always syncs ALL decks — routing is an
+    Anki-plugin-only concept. Returning ``None`` means "unscoped: sync
+    everything the server has". This is critical for a fresh collection
+    which has no local decks yet but needs to pull everything from the server.
+    """
+    if config.kelmasync_only():
+        return None
     names = [d.name for d in mw.col.decks.all_names_and_ids()]
     selected = set(config.decks_for_service(consts.KELMA, names))
     # Lower layers expand selected parents to subdecks. Remove a parent from the
@@ -2185,10 +2194,13 @@ class V2FullDiffDialog(QDialog):
                 return
             self._client = client
             deck_names = _v2_kelma_deck_names()
-            if not deck_names:
+            if not deck_names and deck_names is not None:
                 p("No decks are picked for KelmaSync. Open Settings → deck routing and tick KelmaSync for at least one deck.")
                 return
-            p(f"Scope: {len(deck_names)} KelmaSync deck(s)")
+            if deck_names is None:
+                p("Scope: all decks (KelmaDesktop)")
+            else:
+                p(f"Scope: {len(deck_names)} KelmaSync deck(s)")
 
             import time as _t
             try:
@@ -3099,7 +3111,7 @@ class V2JointStateDialog(QDialog):
         actions.addWidget(close)
         layout.addLayout(actions)
 
-        if self._client is None or not self._deck_names:
+        if self._client is None or (not self._deck_names and self._deck_names is not None):
             self.status.setText("Sign in and choose at least one KelmaSync deck before reviewing changes.")
             self.apply_btn.setEnabled(False)
         else:
@@ -3693,15 +3705,9 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
         tooltip(f"KelmaSync: {blocked}")
         return
     deck_names = _v2_kelma_deck_names()
-    if not deck_names:
-        if config.kelmasync_only():
-            # KelmaDesktop with empty routing = all decks. A fresh collection
-            # has no decks yet, so sync unscoped to pull everything from
-            # the server. Decks are created as notes/cards arrive.
-            deck_names = None
-        else:
-            tooltip("KelmaSync: no decks are picked for KelmaSync. Open Settings → deck routing.")
-            return
+    if not deck_names and deck_names is not None:
+        tooltip("KelmaSync: no decks are picked for KelmaSync. Open Settings → deck routing.")
+        return
     client = _v2_client_or_login()
     if client is None:
         return
@@ -3721,7 +3727,8 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
         dlg.progress("Order: inspect local → pull/push AnkiWeb → reconcile KelmaSync → publish AnkiWeb.")
         tooltip("KelmaSync + AnkiWeb: reconciling sources… progress window opened.")
     else:
-        dlg.progress(f"KelmaSync queued for {len(deck_names) if deck_names else 'all'} deck(s). Waiting for Anki collection worker…")
+        count_text = f"{len(deck_names)}" if deck_names else "all"
+        dlg.progress(f"KelmaSync queued for {count_text} deck(s). Waiting for Anki collection worker…")
         tooltip("KelmaSync: syncing… progress window opened.")
 
     def _work():
