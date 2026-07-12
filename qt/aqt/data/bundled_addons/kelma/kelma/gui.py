@@ -44,7 +44,7 @@ from aqt.qt import (
     QWidget,
     QWidgetAction,
 )
-from aqt.utils import tooltip
+from aqt.utils import tooltip, askUser
 
 from . import auth, branding, capabilities, config, consts, deckbadges, engine, features, inspect, state
 
@@ -1258,6 +1258,90 @@ class CompareDialog(QDialog):
         engine.dual_sync(only=consts.KELMA)
 
 
+def _remove_decks_from_kelmasync(removed_decks: list[str], remaining_kelma: set[str]) -> None:
+    """Delete removed decks' data from the KelmaSync server.
+
+    Other KelmaSync clients learn about the deletion via tombstones on their
+    next sync. The local Anki collection is not affected.
+    """
+    client = _v2_client_or_login()
+    if client is None:
+        tooltip("KelmaSync: sign in to remove deck data from the server.")
+        return
+
+    dlg = V2SyncProgressDialog(mw)
+    dlg.show()
+    dlg.progress(f"Removing {len(removed_decks)} deck(s) from KelmaSync…")
+
+    def _in_removed(deck_name: str) -> bool:
+        return any(deck_name == d or deck_name.startswith(d + "::") for d in removed_decks)
+
+    def _in_remaining(deck_name: str) -> bool:
+        return any(deck_name == d or deck_name.startswith(d + "::") for d in remaining_kelma)
+
+    def work():
+        manifest = client.manifest()
+        removed_card_ids = []
+        removed_deck_names = set()
+        for card in manifest.get("cards", []):
+            deck_name = str(card.get("deck_name", ""))
+            if _in_removed(deck_name) and not _in_remaining(deck_name):
+                cid = int(card.get("card_id", 0) or 0)
+                if cid:
+                    removed_card_ids.append(cid)
+                removed_deck_names.add(deck_name)
+
+        deleted_cards = 0
+        for start in range(0, len(removed_card_ids), 3000):
+            chunk = removed_card_ids[start:start + 3000]
+            resp = client.batch_delete(cards=chunk)
+            deleted_cards += int((resp.get("deleted") or {}).get("cards", 0))
+            dlg.progress(f"Deleting cards: {min(start + 3000, len(removed_card_ids))}/{len(removed_card_ids)}…")
+
+        # After card deletion, find notes that no longer have any server cards.
+        manifest_after = client.manifest()
+        remaining_note_guids = {
+            str(c.get("note_guid", "")) for c in manifest_after.get("cards", [])
+        }
+        orphaned_notes = [
+            str(n.get("guid", ""))
+            for n in manifest_after.get("notes", [])
+            if str(n.get("guid", "")) not in remaining_note_guids
+        ]
+
+        deleted_notes = 0
+        for start in range(0, len(orphaned_notes), 3000):
+            chunk = orphaned_notes[start:start + 3000]
+            resp = client.batch_delete(notes=chunk)
+            deleted_notes += int((resp.get("deleted") or {}).get("notes", 0))
+            dlg.progress(f"Deleting orphaned notes: {min(start + 3000, len(orphaned_notes))}/{len(orphaned_notes)}…")
+
+        # Delete deck definitions no longer in the remaining Kelma scope.
+        deleted_decks = 0
+        for deck_name in sorted(removed_deck_names):
+            if not _in_remaining(deck_name):
+                try:
+                    client.delete_deck(deck_name)
+                    deleted_decks += 1
+                except Exception:
+                    pass
+
+        return deleted_cards, deleted_notes, deleted_decks
+
+    def done(future: Future) -> None:
+        try:
+            cards, notes, decks = future.result()
+            dlg.complete(
+                f"Removed {cards} card(s), {notes} note(s), and {decks} deck(s) from KelmaSync. "
+                "Other devices will remove them on their next sync.",
+                ok=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            dlg.complete(f"Could not remove deck data: {err}", ok=False)
+
+    mw.taskman.run_in_background(work, done, uses_collection=False)
+
+
 class SettingsDialog(QDialog):
     """One window: log in to each service, and pick which decks sync where."""
 
@@ -1566,6 +1650,11 @@ class SettingsDialog(QDialog):
             ]
             routing[name] = services
         cfg = config.get()
+        old_routing = cfg.get("deck_routing", {})
+        old_kelma = {name for name, services in old_routing.items() if consts.KELMA in services}
+        new_kelma = {name for name, services in routing.items() if consts.KELMA in services}
+        removed = old_kelma - new_kelma
+
         cfg["deck_routing"] = routing
         cfg["enabled"] = self.enabled_cb.isChecked()
         cfg["sync_media"] = self.media_cb.isChecked()
@@ -1573,7 +1662,22 @@ class SettingsDialog(QDialog):
         cfg["kelmasync_path"] = self.path_combo.currentData()
         config.save(cfg)
         capabilities.clear_cache()  # re-probe under the new setting/URL
-        tooltip("Kelma settings saved.", parent=mw)
+
+        if removed and config.has_credentials(consts.KELMA):
+            deck_list = "\n".join(f"  • {d}" for d in sorted(removed))
+            if askUser(
+                f"Remove these decks from KelmaSync?\n\n{deck_list}\n\n"
+                "Their notes, cards, and media will be deleted from the KelmaSync "
+                "server. Other KelmaSync devices will remove them on their next sync.\n\n"
+                "Your local Anki collection is not affected.",
+                parent=self,
+            ):
+                self.accept()
+                _remove_decks_from_kelmasync(sorted(removed), new_kelma)
+                return
+            tooltip("Kelma settings saved. Deck data remains on KelmaSync.", parent=mw)
+        else:
+            tooltip("Kelma settings saved.", parent=mw)
         self.accept()
 
 
