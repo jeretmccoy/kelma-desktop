@@ -107,6 +107,22 @@ def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], 
     return scoped
 
 
+def _tombstones_for_snapshot(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[dict]:
+    """Only apply tombstones for resources this exact scoped client knew."""
+    known = {
+        "note": set(snapshot.get("notes", [])),
+        "card": set(snapshot.get("cards", [])),
+        "notetype": set(snapshot.get("notetypes", [])),
+        "deck": set(snapshot.get("decks", [])),
+    }
+    return [
+        tombstone
+        for tombstone in manifest.get("tombstones", [])
+        if tombstone.get("type") in known
+        and str(tombstone.get("resource_id", "")) in known[tombstone["type"]]
+    ]
+
+
 def _push_local_deletes(col: Collection, client: V2Client, deletes: dict[str, list[str]], progress=None) -> None:
     """Push scoped local deletions in transactional 3,000-item batches."""
     total = sum(len(v) for v in deletes.values())
@@ -178,26 +194,34 @@ def sync_content_once(
         if progress:
             progress(f"Scoping server manifest to {len(deck_names)} Kelma deck(s)…")
         manifest = _scope_server_manifest_to_decks(client, manifest, deck_names, progress=progress)
+    # Tombstones and local delete detection are valid only against the exact
+    # routing scope that produced the previous snapshot. A route change resets
+    # the baseline instead of deleting data in either direction.
+    snapshot = sync_state.load_state(col)
+    current_scope = sorted(set(deck_names or ([deck_name] if deck_name else [])))
+    previous_scope = snapshot.get("scope")
+    scope_matches = snapshot.get("version") == 2 and previous_scope == current_scope
+    if scope_matches:
+        manifest = dict(manifest)
+        manifest["tombstones"] = _tombstones_for_snapshot(manifest, snapshot)
+    else:
+        manifest = dict(manifest)
+        manifest["tombstones"] = []
+        if progress and any(snapshot.get(key) for key in ("notes", "cards", "notetypes", "decks")):
+            progress("Deletes: routing scope changed (or old snapshot found); resetting deletion baseline without deleting data")
+
     if progress:
         progress(
             f"Server manifest: {len(manifest.get('notes', []))} notes, "
             f"{len(manifest.get('cards', []))} cards, {len(manifest.get('notetypes', []))} notetypes, "
             f"{len(manifest.get('decks', []))} decks, {len(manifest.get('media', []))} media"
         )
-        progress("Phase 2/9: applying server tombstones…")
+        progress("Phase 2/9: applying scoped server tombstones…")
     tombstones = apply_tombstones(col, manifest)
     if progress:
         progress(f"Tombstones complete: applied {tombstones.applied}")
+        progress("Phase 3/9: previous scoped snapshot loaded")
 
-    # Detect locally deleted resources by comparing to the last snapshot.
-    if progress:
-        progress("Phase 3/9: loading previous sync snapshot…")
-    snapshot = sync_state.load_state(col)
-    current_scope = sorted(set(deck_names or ([deck_name] if deck_name else [])))
-    previous_scope = snapshot.get("scope")
-    scope_matches = snapshot.get("version") == 2 and previous_scope == current_scope
-    if not scope_matches and progress and any(snapshot.get(key) for key in ("notes", "cards", "notetypes", "decks")):
-        progress("Deletes: routing scope changed (or old snapshot found); resetting deletion baseline without deleting server data")
     # Repair local duplicate generated cards before building manifests. This
     # prevents invalid duplicate cards/blank-GUID duplicate notes from being
     # counted or pushed forever.
