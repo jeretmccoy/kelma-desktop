@@ -53,7 +53,7 @@ from aqt.operations.deck import set_current_deck
 from aqt.profiles import ProfileManager as ProfileManagerType
 from aqt.qt import *
 from aqt.qt import sip
-from aqt.sync import sync_collection, sync_login
+from aqt.sync import sync_collection
 from aqt.taskman import TaskManager
 from aqt.theme import Theme, theme_manager
 from aqt.toolbar import BottomWebView, Toolbar, TopWebView
@@ -1090,17 +1090,13 @@ title="{}" {}>{}</button>""".format(
     ##########################################################################
 
     def on_sync_button_clicked(self) -> None:
-        if self.media_syncer.is_syncing():
-            self.media_syncer.show_sync_log()
-        else:
-            auth = self.pm.sync_auth()
-            if not auth:
-                sync_login(
-                    self,
-                    lambda: self._sync_collection_and_media(self._refresh_after_sync),
-                )
-            else:
-                self._sync_collection_and_media(self._refresh_after_sync)
+        # KelmaDesktop is KelmaSync v2-only. Never enter Anki's native sync/login
+        # path here: it speaks the AnkiWeb wire protocol and rejects Kelma
+        # Immersion credentials. The core button calls the bundled v2 bridge
+        # directly, even if add-on GUI hooks initialized late.
+        from aqt._kelma_bundled import run_kelma_sync
+
+        run_kelma_sync(self)
 
     def _refresh_after_sync(self) -> None:
         self.toolbar.redraw()
@@ -1189,6 +1185,10 @@ title="{}" {}>{}</button>""".format(
             ("y", self.on_sync_button_clicked),
         ]
         self.applyShortcuts(globalShortcuts)
+        # StandardKey.Save maps to Command+S on macOS and Ctrl+S elsewhere.
+        # Core owns this shortcut so it works before/without add-on menu hooks.
+        self._kelma_sync_shortcut = QShortcut(QKeySequence.StandardKey.Save, self)
+        qconnect(self._kelma_sync_shortcut.activated, self.on_sync_button_clicked)
         self.stateShortcuts: list[QShortcut] = []
 
     def _close_active_window(self) -> None:

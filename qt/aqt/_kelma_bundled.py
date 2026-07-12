@@ -15,9 +15,39 @@ from __future__ import annotations
 import os
 import shutil
 
-BUNDLED_VERSION = "1.0.109"
+BUNDLED_VERSION = "1.0.110"
 ADDON = "kelma"
 _MARKER = ".kelma_bundled_version"
+
+# PyOxidizer compiles Python files under `_aqt/data` to `.pyc`. Anki's add-on
+# discovery deliberately requires a source `__init__.py`, so a packaged bundle
+# containing only `__init__.pyc` is invisible. Write this small stable loader
+# after each bundle copy; the rest of the add-on can remain compiled bytecode.
+_ADDON_LOADER = '''"""KelmaDesktop bundled KelmaSync loader."""
+from aqt import gui_hooks
+
+_initialized = False
+
+
+def _on_profile_open(*_args):
+    global _initialized
+    if _initialized:
+        return
+    try:
+        from aqt import mw
+        if mw is None or mw.col is None:
+            return
+        from .kelma import gui
+        gui.setup()
+        _initialized = True
+    except Exception as err:
+        from aqt.utils import showWarning
+        showWarning(f"KelmaSync failed to initialize:\\n{err}")
+
+
+gui_hooks.profile_did_open.append(_on_profile_open)
+gui_hooks.main_window_did_init.append(_on_profile_open)
+'''
 
 
 def _bundled_dir() -> str:
@@ -57,6 +87,10 @@ def sync_bundled_addon(mw) -> None:
                     continue
                 shutil.copy2(os.path.join(root, name), os.path.join(target_root, name))
 
+        # Always refresh the source bootstrap; it is app code, not user config.
+        with open(os.path.join(dst, "__init__.py"), "w", encoding="utf8") as f:
+            f.write(_ADDON_LOADER)
+
         with open(marker, "w", encoding="utf8") as f:
             f.write(BUNDLED_VERSION)
     except Exception as err:  # noqa: BLE001 - never break startup
@@ -70,3 +104,20 @@ def sync_bundled_addon(mw) -> None:
             showWarning(f"KelmaSync could not be installed:\n{err}")
         except Exception:
             pass
+
+
+def run_kelma_sync(mw) -> None:
+    """Run KelmaSync from Desktop core without any native AnkiWeb fallback."""
+    try:
+        import importlib
+
+        addon = importlib.import_module(ADDON)
+        initialize = getattr(addon, "_on_profile_open", None)
+        if initialize:
+            initialize()
+        gui = importlib.import_module(f"{ADDON}.kelma.gui")
+        gui.run_kelma_desktop_sync()
+    except Exception as err:  # noqa: BLE001 - show actionable startup failure
+        from aqt.utils import showWarning
+
+        showWarning(f"KelmaSync could not start:\n{err}", parent=mw)

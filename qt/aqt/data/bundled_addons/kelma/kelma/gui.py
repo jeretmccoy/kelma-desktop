@@ -3754,6 +3754,11 @@ def _v2_sync_menu() -> None:
         V2JointStateDialog(mw).exec()
 
 
+def run_kelma_desktop_sync() -> None:
+    """Public bridge used by KelmaDesktop's core Sync button/shortcut."""
+    _v2_test_sync_notes(also_ankiweb=False)
+
+
 def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
     """Reconcile AnkiWeb → local ↔ KelmaSync → AnkiWeb.
 
@@ -3976,10 +3981,10 @@ def _build_menu() -> None:
 
     if config.kelmasync_only():
         act_sync = QAction("Sync KelmaSync", mw)
-        act_sync.setShortcut(QKeySequence.StandardKey.Save)
-        act_sync.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        # KelmaDesktop core owns StandardKey.Save so the shortcut works even if
+        # add-on initialization is delayed and never becomes ambiguous.
         act_sync.setToolTip("Sync KelmaSync (Ctrl+S / Command+S)")
-        act_sync.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=False))
+        act_sync.triggered.connect(run_kelma_desktop_sync)
         menu.addAction(act_sync)
     else:
         act_staged = QAction("Review and sync changes…", mw)
