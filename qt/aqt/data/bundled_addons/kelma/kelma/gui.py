@@ -2252,6 +2252,19 @@ class V2FullDiffDialog(QDialog):
                 p(f"⚠ Compare failed: {err}")
                 return
 
+            # If everything matches the server, reset the badge baseline so
+            # pulled data doesn't show as +N pending.
+            total_changed = sum(
+                1 for entries in (notes, notetypes, decks, cards)
+                for e in entries if e.status != "in-sync"
+            )
+            if total_changed == 0:
+                try:
+                    _mark_service_synced_for_badges(consts.KELMA)
+                    p("Everything matches KelmaSync — badges reset.")
+                except Exception:  # noqa: BLE001
+                    pass
+
             try:
                 p("Building table…")
                 self._populate()
