@@ -128,6 +128,10 @@ def apply_notetype(col: Collection, record: dict[str, Any]) -> int:
     definition["id"] = ntid
     if "name" in record:
         definition["name"] = record["name"]
+    # rslib's schema11 deserialization (Rust) requires mod/usn. The normalized
+    # definition strips them for checksum stability; restore defaults here.
+    definition.setdefault("mod", int(time.time()))
+    definition.setdefault("usn", 0)
     existing = col.models.get(ntid)
     if existing:
         existing.update(definition)
