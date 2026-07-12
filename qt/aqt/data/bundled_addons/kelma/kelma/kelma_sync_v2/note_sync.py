@@ -82,7 +82,7 @@ def sync_notes_once(
     server_only: list[str] = []
     for idx, guid in enumerate(all_guids, 1):
         if progress and (idx == 1 or idx == total or idx % _BATCH_SIZE == 0):
-            progress(f"Notes plan {idx}/{total} · new {len(local_only)}, pulled {result.pulled}, skipped {result.skipped}, conflicts {len(result.conflicts)}")
+            progress(f"Notes plan {idx}/{total} · to push {len(local_only)}, to pull {len(server_only)}, in sync {result.skipped}, conflicts {len(result.conflicts)}")
         local = local_manifest.get(guid)
         server = server_notes.get(guid)
         if local and server and local.get("checksum") == server.get("checksum"):

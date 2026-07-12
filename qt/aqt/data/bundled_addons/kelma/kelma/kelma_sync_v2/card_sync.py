@@ -56,7 +56,7 @@ def sync_cards_once(col: Collection, client: V2Client, server_manifest: dict | N
     server_pull_ids: list[int] = []  # card_ids to batch-pull
     for idx, key in enumerate(keys, 1):
         if progress and (idx == 1 or idx == total or idx % _BATCH_SIZE == 0):
-            progress(f"Cards plan {idx}/{total} · new {len(local_only)}, pushed {result.pushed}, pulled {result.pulled}, skipped {result.skipped}, conflicts {len(result.conflicts)}")
+            progress(f"Cards plan {idx}/{total} · to push {len(local_only)}, to pull {len(server_pull_ids)}, in sync {result.skipped}, conflicts {len(result.conflicts)}")
         l = local.get(key)
         s = server.get(key)
         if l and s:
