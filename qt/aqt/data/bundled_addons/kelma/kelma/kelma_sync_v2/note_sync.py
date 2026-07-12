@@ -79,6 +79,7 @@ def sync_notes_once(
     if progress:
         progress(f"Notes: planning {total} notes by checksum…")
     local_only: list[str] = []
+    server_only: list[str] = []
     for idx, guid in enumerate(all_guids, 1):
         if progress and (idx == 1 or idx == total or idx % _BATCH_SIZE == 0):
             progress(f"Notes plan {idx}/{total} · new {len(local_only)}, pulled {result.pulled}, skipped {result.skipped}, conflicts {len(result.conflicts)}")
@@ -92,8 +93,7 @@ def sync_notes_once(
             continue
         if server and not local:
             if apply_pulls:
-                anki_apply.apply_server_note(col, client, guid)
-                result.pulled += 1
+                server_only.append(guid)
             else:
                 result.skipped += 1
             continue
@@ -101,6 +101,22 @@ def sync_notes_once(
             # Both sides exist and content checksums differ. Do not silently
             # choose local; surface this as an explicit merge conflict.
             result.conflicts.append({"guid": guid, "server": server, "client": local})
+
+    # Batch-pull server-only notes instead of one HTTP request per note.
+    if server_only:
+        if progress:
+            progress(f"Notes: pulling {len(server_only)} server-only notes in {_BATCH_SIZE}-item batches…")
+        for start in range(0, len(server_only), _BATCH_SIZE):
+            chunk = server_only[start:start + _BATCH_SIZE]
+            resp = client.batch_pull(notes=chunk)
+            for record in resp.get("notes", []):
+                try:
+                    anki_apply.apply_note(col, record)
+                    result.pulled += 1
+                except Exception:
+                    result.skipped += 1
+            if progress:
+                progress(f"Notes: pulled {min(start + _BATCH_SIZE, len(server_only))}/{len(server_only)}…")
 
     if local_only:
         if progress:

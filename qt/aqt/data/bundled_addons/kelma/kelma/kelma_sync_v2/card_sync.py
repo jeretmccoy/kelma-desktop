@@ -53,6 +53,7 @@ def sync_cards_once(col: Collection, client: V2Client, server_manifest: dict | N
     if progress:
         progress(f"Cards: planning {total} cards by logical identity…")
     local_only: list[int] = []
+    server_pull_ids: list[int] = []  # card_ids to batch-pull
     for idx, key in enumerate(keys, 1):
         if progress and (idx == 1 or idx == total or idx % _BATCH_SIZE == 0):
             progress(f"Cards plan {idx}/{total} · new {len(local_only)}, pushed {result.pushed}, pulled {result.pulled}, skipped {result.skipped}, conflicts {len(result.conflicts)}")
@@ -69,11 +70,7 @@ def sync_cards_once(col: Collection, client: V2Client, server_manifest: dict | N
             if local_ts > server_ts:
                 local_only.append(int(l["card_id"]))  # push local scheduling
             elif server_ts > local_ts:
-                try:
-                    anki_apply.apply_server_card(col, client, int(s["card_id"]))
-                    result.pulled += 1
-                except Exception:
-                    result.skipped += 1
+                server_pull_ids.append(int(s["card_id"]))
             else:
                 result.skipped += 1
             continue
@@ -81,12 +78,24 @@ def sync_cards_once(col: Collection, client: V2Client, server_manifest: dict | N
             local_only.append(int(l["card_id"]))
             continue
         if s:
-            # Server-only card: apply its scheduling if the card exists locally.
-            try:
-                anki_apply.apply_server_card(col, client, int(s["card_id"]))
-                result.pulled += 1
-            except Exception:
-                result.skipped += 1
+            # Server-only card: batch-pull and apply if the card exists locally.
+            server_pull_ids.append(int(s["card_id"]))
+
+    # Batch-pull server cards instead of one HTTP request per card.
+    if server_pull_ids:
+        if progress:
+            progress(f"Cards: pulling {len(server_pull_ids)} server cards in {_BATCH_SIZE}-item batches…")
+        for start in range(0, len(server_pull_ids), _BATCH_SIZE):
+            chunk = server_pull_ids[start:start + _BATCH_SIZE]
+            resp = client.batch_pull(cards=chunk)
+            for record in resp.get("cards", []):
+                try:
+                    anki_apply.apply_card(col, record)
+                    result.pulled += 1
+                except Exception:
+                    result.skipped += 1
+            if progress:
+                progress(f"Cards: pulled {min(start + _BATCH_SIZE, len(server_pull_ids))}/{len(server_pull_ids)}…")
     if local_only:
         if progress:
             progress(f"Cards: pushing {len(local_only)} new cards in {_BATCH_SIZE}-item batches…")
