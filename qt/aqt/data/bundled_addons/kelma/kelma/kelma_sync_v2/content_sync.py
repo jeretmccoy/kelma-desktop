@@ -50,13 +50,22 @@ def _chunks(xs: list, n: int = 3000):
         yield xs[i:i + n]
 
 
-def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], deck_names: list[str], progress=None) -> dict[str, Any]:
+def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], deck_names: list[str] | None, progress=None) -> dict[str, Any]:
     """Filter server manifest to the deck picker scope.
 
     Server note manifest entries don't include deck membership, so derive scope
     from full server cards (card -> deck_name + note_guid), then keep only notes
-    referenced by scoped cards.
+    referenced by scoped cards. ``deck_names=None`` means unscoped (all decks).
     """
+    if deck_names is None:
+        # Unscoped: build logical keys from manifest data without pulling cards.
+        for m in manifest.get("cards", []):
+            if "logical_key" not in m:
+                guid = str(m.get("note_guid", ""))
+                ord_ = int(m.get("ord", 0) or 0)
+                m["logical_key"] = f"{guid}:{ord_}"
+        return manifest
+
     allowed = set(deck_names)
 
     def _in_scope(deck: str) -> bool:
