@@ -56,11 +56,9 @@ def apply_card(col: Collection, record: dict[str, Any]) -> int:
         if row:
             cid = int(row[0])
     if not cid:
-        cid = int(record.get("card_id") or 0)
-        if not cid:
-            raise ValueError("server card missing identity")
-        if not col.db.first("SELECT id FROM cards WHERE id = ?", cid):
-            raise ValueError(f"local card not found: {cid}")
+        # Card doesn't exist locally (e.g. note was just created but the
+        # notetype template didn't generate this ord). Skip gracefully.
+        return 0
 
     queue = int(sched.get("queue", 0) or 0)
     due = int(sched.get("due", 0) or 0)
@@ -92,15 +90,23 @@ def apply_card(col: Collection, record: dict[str, Any]) -> int:
         mod = int(datetime.fromisoformat(str(modified_at).replace("Z", "+00:00")).timestamp())
     except Exception:
         mod = int(time.time())
+    # Resolve the deck by name so pulled cards land in the correct deck,
+    # not just wherever add_note placed them.
+    deck_name = record.get("deck_name") or ""
+    deck_id = 0
+    if deck_name:
+        deck_id = col.decks.id(deck_name)
+
     col.db.execute(
         """
         UPDATE cards SET type=?, queue=?, due=?, ivl=?, factor=?, reps=?,
-                         lapses=?, left=?, odue=?, odid=?, flags=?, data=?, mod=?
+                         lapses=?, left=?, odue=?, odid=?, flags=?, data=?, mod=?, did=?
         WHERE id=?
         """,
         fields["type"], fields["queue"], fields["due"], fields["ivl"],
         fields["factor"], fields["reps"], fields["lapses"], fields["left"],
-        fields["odue"], fields["odid"], fields["flags"], fields["data"], mod, cid,
+        fields["odue"], fields["odid"], fields["flags"], fields["data"], mod,
+        deck_id, cid,
     )
     # Do NOT set usn=-1 here. A scheduling pull from KelmaSync is not a local
     # edit — setting usn=-1 would make AnkiWeb think the user changed these
