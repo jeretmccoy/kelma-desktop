@@ -3074,7 +3074,15 @@ class V2JointStateDialog(QDialog):
             remote.reopen(after_full_sync=True)
             ankiweb = anki_local.local_manifest(remote, deck_names=deck_names)
             local = anki_local.local_manifest(mw.col, deck_names=deck_names)
+            # Notetypes are global, not deck-scoped. Include all of them so a
+            # notetype that exists locally but has no scoped notes isn't shown
+            # as a false KelmaSync-only conflict.
+            local["notetypes"] = anki_local.notetype_manifest(mw.col)
+            ankiweb["notetypes"] = anki_local.notetype_manifest(remote)
             kelma = _scope_server_manifest_to_decks(client, client.manifest(), deck_names)
+            # The server scope helper only filters cards/notes/decks; keep all
+            # notetypes from the server manifest.
+            kelma["notetypes"] = client.manifest().get("notetypes", [])
             return temp_dir, remote, local, ankiweb, kelma
 
         def done(future: Future) -> None:
