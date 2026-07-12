@@ -2539,6 +2539,19 @@ class V2CompareDialog(QDialog):
         mw.taskman.run_in_background(work, done, uses_collection=True)
 
 
+def _mark_service_synced_for_badges(service: str) -> None:
+    """Reset the pending-change badge after a confirmed pull/publish."""
+    st = state.load()
+    path = config.get().get("v2_url", "") if service == consts.KELMA else "AnkiWeb"
+    state.mark_synced(st, service, path)
+    state.save(st)
+    try:
+        if mw.state == "deckBrowser":
+            mw.deckBrowser.refresh()
+    except Exception:  # noqa: BLE001 - badge refresh is best-effort
+        pass
+
+
 def _v2_run_ankiweb_sync(progress=None, done=None) -> None:
     """Run native AnkiWeb sync with a completion callback when auth exists.
 
@@ -2571,6 +2584,7 @@ def _v2_run_ankiweb_sync(progress=None, done=None) -> None:
             progress("AnkiWeb: native sync finished.")
         if _V2_ACTIVE_ACTION == "ankiweb":
             _V2_ACTIVE_ACTION = None
+        _mark_service_synced_for_badges(consts.ANKIWEB)
         if done:
             done(True, "AnkiWeb sync finished.")
 
@@ -2885,6 +2899,7 @@ class V2JointStateDialog(QDialog):
         self._row_values: list[dict[str, dict | None]] = []
         self._choices: list[QComboBox] = []
         self._kelma_changes: list[dict] = []
+        self._ankiweb_changes: list[dict] = []
         self._note_previews: dict[str, str] = {}
         self._deck_names = _v2_kelma_deck_names()
 
@@ -3266,6 +3281,9 @@ class V2JointStateDialog(QDialog):
         else:
             self.apply_btn.setText("Apply choices to this computer")
 
+    def _mark_badge_synced(self, service: str) -> None:
+        _mark_service_synced_for_badges(service)
+
     def _apply(self) -> None:
         selected = [choice.currentData() for choice in self._choices]
         if any(source is None for source in selected):
@@ -3274,15 +3292,20 @@ class V2JointStateDialog(QDialog):
             return
         decisions = [(resource, key, str(selected[i])) for i, (resource, key) in enumerate(self._rows)]
         self._kelma_changes = []
+        self._ankiweb_changes = []
         for resource, key, source in decisions:
             chosen = self._sources[resource][source].get(key)
-            kelma = self._sources[resource]["KelmaSync"].get(key)
-            if self._fingerprint(resource, chosen) != self._fingerprint(resource, kelma):
-                self._kelma_changes.append({
-                    "resource": resource,
-                    "key": key,
-                    "server_item": kelma,
-                })
+            for target, changes in (
+                ("KelmaSync", self._kelma_changes),
+                ("AnkiWeb", self._ankiweb_changes),
+            ):
+                target_item = self._sources[resource][target].get(key)
+                if self._fingerprint(resource, chosen) != self._fingerprint(resource, target_item):
+                    changes.append({
+                        "resource": resource,
+                        "key": key,
+                        "server_item": target_item,
+                    })
         client = self._client
         temp_path = str(Path(self._temp_dir or "") / "collection.anki2")
         self.apply_btn.setEnabled(False)
@@ -3348,16 +3371,24 @@ class V2JointStateDialog(QDialog):
             for choice in self._choices:
                 choice.setEnabled(False)
             self.apply_btn.setEnabled(False)
-            kelma_text = (
-                f"{len(self._kelma_changes)} change(s) need publishing to KelmaSync"
-                if self._kelma_changes
-                else "KelmaSync already has every chosen version"
-            )
+            if not self._kelma_changes:
+                self._mark_badge_synced(consts.KELMA)
+            if not self._ankiweb_changes:
+                self._mark_badge_synced(consts.ANKIWEB)
+            pending = []
+            if self._kelma_changes:
+                pending.append(f"{len(self._kelma_changes)} for KelmaSync")
+            if self._ankiweb_changes:
+                pending.append(f"{len(self._ankiweb_changes)} for AnkiWeb")
+            pending_text = ", ".join(pending) if pending else "none"
             self.status.setText(
-                f"Applied {count} change(s) to this computer. {kelma_text}; AnkiWeb still needs publishing."
+                f"Applied {count} change(s) to this computer. Changes still to publish: {pending_text}."
             )
-            self.publish_btn.setEnabled(True)
-            self.publish_btn.setDefault(True)
+            if self._kelma_changes or self._ankiweb_changes:
+                self.publish_btn.setEnabled(True)
+                self.publish_btn.setDefault(True)
+            else:
+                self.publish_btn.setText("Already synchronized ✓")
 
         mw.taskman.run_in_background(work, done, uses_collection=True)
 
@@ -3365,7 +3396,12 @@ class V2JointStateDialog(QDialog):
         self.publish_btn.setEnabled(False)
 
         def prepare_ankiweb() -> None:
-            self.status.setText("Preparing the chosen result for AnkiWeb…")
+            if not self._ankiweb_changes:
+                self._mark_badge_synced(consts.ANKIWEB)
+                self.status.setText("Done — this computer, AnkiWeb, and KelmaSync now have the chosen result.")
+                self.publish_btn.setText("Published everywhere ✓")
+                return
+            self.status.setText(f"Preparing {len(self._ankiweb_changes)} selected change(s) for AnkiWeb…")
 
             def work():
                 from kelma_sync_v2.canonical_sync import mark_client_state_for_ankiweb
@@ -3419,6 +3455,7 @@ class V2JointStateDialog(QDialog):
                 self.status.setText(f"Could not publish the selected changes to KelmaSync: {err}")
                 self.publish_btn.setEnabled(True)
                 return
+            self._mark_badge_synced(consts.KELMA)
             prepare_ankiweb()
 
         mw.taskman.run_in_background(push_kelma, kelma_done, uses_collection=True)
@@ -3517,11 +3554,8 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
         cfg2 = config.get()
         cfg2["v2_last_server_time"] = result.server_time
         config.save(cfg2)
-        # Mark the kelma service as synced in the badge state file so pulled
-        # scheduling changes don't appear as local "~n changed" edits.
-        st = state.load()
-        state.mark_synced(st, consts.KELMA, cfg2.get("v2_url", ""))
-        state.save(st)
+        # Pulled scheduling/content is a synchronized update, not a local edit.
+        _mark_service_synced_for_badges(consts.KELMA)
         msg = (
             f"tombstones {result.tombstones.applied}, "
             f"decks {result.decks.pushed}/{result.decks.pulled}, "
