@@ -52,10 +52,20 @@ def service_decks(state: dict, service: str) -> dict:
 
 
 # -- last-sync metadata ------------------------------------------------------
-def mark_synced(state: dict, service: str, path: str) -> None:
+def mark_synced(state: dict, service: str, path: str, col: Collection | None = None) -> None:
     meta = state.setdefault("meta", {}).setdefault(service, {})
     meta["at"] = int(time.time())
     meta["path"] = path
+    if col is not None:
+        # A wall-clock cutoff is not enough: pulled cards preserve the source's
+        # mod time, which can be newer than an old/stale sync timestamp. Capture
+        # the exact per-deck collection state at convergence instead.
+        meta["card_baseline"] = {
+            str(int(did)): [int(max_id or 0), int(max_mod or 0)]
+            for did, max_id, max_mod in col.db.all(
+                "SELECT did, max(id), max(mod) FROM cards GROUP BY did"
+            )
+        }
 
 
 def last_sync(service: str) -> Optional[dict]:
@@ -108,56 +118,66 @@ def _name_dids_map(col: Collection, deck_names: list[str]) -> dict[str, list[int
 def pending_for_service(
     col: Collection, deck_names: list[str], service: str
 ) -> dict[str, tuple[int, int]]:
-    """Per-deck (added, changed) card counts since this service last synced.
-
-    `added`  = cards whose id (creation ms) is newer than the last sync.
-    `changed`= older cards whose mod (edit/review secs) is newer than the last
-               sync. If the service has never synced, everything counts as added.
-    """
-    meta = last_sync(service)
-    last_sec = int(meta["at"]) if meta and meta.get("at") else 0
-    last_ms = last_sec * 1000
-
-    added: dict[int, int] = {}
-    for did, cnt in col.db.all(
-        "select did, count(*) from cards where id > ? group by did", last_ms
-    ):
-        added[did] = cnt
-    changed: dict[int, int] = {}
-    for did, cnt in col.db.all(
-        "select did, count(*) from cards where mod > ? and id <= ? group by did",
-        last_sec,
-        last_ms,
-    ):
-        changed[did] = cnt
-
+    """Per-deck card changes since this service's exact collection baseline."""
+    pending = pending_by_did(col, service)
     out: dict[str, tuple[int, int]] = {}
     for name, dids in _name_dids_map(col, deck_names).items():
-        a = sum(added.get(d, 0) for d in dids)
-        c = sum(changed.get(d, 0) for d in dids)
-        out[name] = (a, c)
+        out[name] = (
+            sum(pending.get(d, (0, 0))[0] for d in dids),
+            sum(pending.get(d, (0, 0))[1] for d in dids),
+        )
     return out
 
 
 def pending_by_did(col: Collection, service: str) -> dict[int, tuple[int, int]]:
-    """Per-deck-id (added, changed) since this service last synced — each deck's
-    own cards only (not rolled up into subdecks), for per-row deck-list badges."""
-    meta = last_sync(service)
-    last_sec = int(meta["at"]) if meta and meta.get("at") else 0
-    last_ms = last_sec * 1000
+    """Per-deck-id changes since the last exact synchronized collection state."""
+    meta = last_sync(service) or {}
+    raw_baseline = meta.get("card_baseline") or {}
+    baseline = {
+        int(did): (int(values[0]), int(values[1]))
+        for did, values in raw_baseline.items()
+        if isinstance(values, list) and len(values) >= 2
+    }
+    if baseline:
+        values_sql = ",".join("(?,?,?)" for _ in baseline)
+        args = [value for did, marks in baseline.items() for value in (did, marks[0], marks[1])]
+        out = {
+            int(did): (int(added or 0), int(changed or 0))
+            for did, added, changed in col.db.all(
+                f"""
+                WITH baseline(did, max_id, max_mod) AS (VALUES {values_sql})
+                SELECT c.did,
+                       sum(CASE WHEN c.id > b.max_id THEN 1 ELSE 0 END),
+                       sum(CASE WHEN c.id <= b.max_id AND c.mod > b.max_mod THEN 1 ELSE 0 END)
+                FROM cards c JOIN baseline b ON b.did = c.did
+                GROUP BY c.did
+                """,
+                *args,
+            )
+        }
+        marks = ",".join("?" for _ in baseline)
+        for did, count in col.db.all(
+            f"SELECT did, count(*) FROM cards WHERE did NOT IN ({marks}) GROUP BY did",
+            *baseline.keys(),
+        ):
+            out[int(did)] = (int(count), 0)
+        return out
 
+    # Backward-compatible fallback until the first successful sync migrates an
+    # old state file to exact per-deck baselines.
+    last_sec = int(meta.get("at") or 0)
+    last_ms = last_sec * 1000
     out: dict[int, list[int]] = {}
     for did, cnt in col.db.all(
         "select did, count(*) from cards where id > ? group by did", last_ms
     ):
-        out[did] = [cnt, 0]
+        out[int(did)] = [int(cnt), 0]
     for did, cnt in col.db.all(
         "select did, count(*) from cards where mod > ? and id <= ? group by did",
-        last_sec,
-        last_ms,
+        last_sec, last_ms,
     ):
-        out.setdefault(did, [0, 0])[1] = cnt
-    return {did: (v[0], v[1]) for did, v in out.items()}
+        out.setdefault(int(did), [0, 0])[1] = int(cnt)
+    return {did: (values[0], values[1]) for did, values in out.items()}
 
 
 def pending_deletions(col: Collection) -> int:

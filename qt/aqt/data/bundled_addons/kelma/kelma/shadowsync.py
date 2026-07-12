@@ -7,9 +7,8 @@ baseline to find which decks changed, then moves *all* changed decks in a single
 batched apkg export/import (one round-trip per direction, or zero if nothing
 changed) — instead of one round-trip per deck.
 
-KelmaSync's "standard" path uses that change-detection; the "legacy" path always
-moves every routed deck (no skipping) for maximal AnkiMobile/stock compatibility.
-AnkiWeb is always legacy.
+KelmaSync compatibility mode is tracked for reporting, but every mode uses the
+same routed, change-detected reconciliation. AnkiWeb is always legacy.
 """
 
 from __future__ import annotations
@@ -136,7 +135,7 @@ def _run_native_sync(col: Collection, auth: SyncAuth, sync_media: bool) -> Colle
 
 def _changed(fps: dict, dstate: dict, key: str, routed: list[str], use_fp: bool) -> list[str]:
     """Decks whose `key` ('m' master / 's' shadow) fingerprint differs from the
-    stored baseline. When change-detection is off (legacy), returns all decks."""
+    stored baseline. The fallback path exists for older callers/tests."""
     if not use_fp:
         return list(routed)
     return [d for d in routed if fps.get(d) != dstate.get(d, {}).get(key)]
@@ -322,7 +321,7 @@ def sync_service(service: str, reporter: Reporter) -> dict:
         except Exception:  # noqa: BLE001 - best-effort close
             pass
 
-    state.mark_synced(st, service, path)
+    state.mark_synced(st, service, path, mw.col)
     state.save(st)
 
     return {

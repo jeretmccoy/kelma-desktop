@@ -2543,7 +2543,7 @@ def _mark_service_synced_for_badges(service: str) -> None:
     """Reset the pending-change badge after a confirmed pull/publish."""
     st = state.load()
     path = config.get().get("v2_url", "") if service == consts.KELMA else "AnkiWeb"
-    state.mark_synced(st, service, path)
+    state.mark_synced(st, service, path, mw.col)
     state.save(st)
     try:
         if mw.state == "deckBrowser":
