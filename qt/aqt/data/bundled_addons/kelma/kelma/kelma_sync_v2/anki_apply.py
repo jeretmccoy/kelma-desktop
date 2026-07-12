@@ -135,9 +135,9 @@ def apply_notetype(col: Collection, record: dict[str, Any]) -> int:
     existing = col.models.get(ntid)
     if existing:
         existing.update(definition)
-        col.models.update_dict(existing)
+        col.models.update(existing, skip_checks=True)
     else:
-        col.models.add_dict(definition)
+        col.models.update(definition, skip_checks=True)
     return ntid
 
 
