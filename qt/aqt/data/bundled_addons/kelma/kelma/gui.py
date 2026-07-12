@@ -2921,6 +2921,7 @@ class V2JointStateDialog(QDialog):
         self.resize(1180, 760)
         self._client = _v2_client_or_login()
         self._temp_dir: str | None = None
+        self._remote_col = None
         self._sources: dict[str, dict[str, dict]] = {}
         self._rows: list[tuple[str, str]] = []
         self._row_values: list[dict[str, dict | None]] = []
@@ -3001,6 +3002,12 @@ class V2JointStateDialog(QDialog):
             self._fetch()
 
     def reject(self) -> None:
+        if self._remote_col is not None:
+            try:
+                self._remote_col.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._remote_col = None
         if self._temp_dir:
             shutil.rmtree(self._temp_dir, ignore_errors=True)
         super().reject()
@@ -3066,14 +3073,13 @@ class V2JointStateDialog(QDialog):
             )
             remote.reopen(after_full_sync=True)
             ankiweb = anki_local.local_manifest(remote, deck_names=deck_names)
-            remote.close()
             local = anki_local.local_manifest(mw.col, deck_names=deck_names)
             kelma = _scope_server_manifest_to_decks(client, client.manifest(), deck_names)
-            return temp_dir, local, ankiweb, kelma
+            return temp_dir, remote, local, ankiweb, kelma
 
         def done(future: Future) -> None:
             try:
-                self._temp_dir, local, ankiweb, kelma = future.result()
+                self._temp_dir, self._remote_col, local, ankiweb, kelma = future.result()
             except Exception as err:  # noqa: BLE001
                 self.status.setText(f"Could not compare the three copies: {err}")
                 return
@@ -3391,14 +3397,12 @@ class V2JointStateDialog(QDialog):
                         "server_item": target_item,
                     })
         client = self._client
-        temp_path = str(Path(self._temp_dir or "") / "collection.anki2")
         self.apply_btn.setEnabled(False)
         self.status.setText("Applying your choices to this computer…")
 
         def work():
-            from anki.collection import Collection
             from kelma_sync_v2 import anki_apply, anki_local
-            remote = Collection(temp_path)
+            remote = self._remote_col
             changed = [decision for decision in decisions if decision[2] != "Client"]
             upserts = []
             deletions = []
@@ -3444,6 +3448,7 @@ class V2JointStateDialog(QDialog):
                 elif resource == "notetypes": anki_apply.apply_notetype(mw.col, record)
                 else: anki_apply.apply_deck(mw.col, record)
             remote.close()
+            self._remote_col = None
             return len(changed)
 
         def done(future: Future) -> None:
