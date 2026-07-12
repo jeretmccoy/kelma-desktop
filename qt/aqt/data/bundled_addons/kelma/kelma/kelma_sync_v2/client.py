@@ -215,6 +215,21 @@ class V2Client:
     def batch_push(self, payload: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
         return self._json("POST", "/v2/batch/push", payload, force=force)
 
+    def batch_delete(
+        self,
+        *,
+        notes: list[str] | None = None,
+        cards: list[int] | None = None,
+        notetypes: list[int] | None = None,
+        decks: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return self._json("POST", "/v2/batch/delete", {
+            "notes": notes or [],
+            "cards": cards or [],
+            "notetypes": notetypes or [],
+            "decks": decks or [],
+        })
+
     # -------------------------------------------------------------- internals --
 
     def _json(

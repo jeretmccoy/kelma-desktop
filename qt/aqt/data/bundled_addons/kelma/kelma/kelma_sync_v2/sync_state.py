@@ -18,7 +18,7 @@ def state_path_for(col: Collection) -> Path:  # type: ignore[name-defined]
     return media_dir / "kelma_sync_v2_state.json"
 
 
-def load_state(col: Collection) -> dict[str, list[str]]:  # type: ignore[name-defined]
+def load_state(col: Collection) -> dict[str, Any]:  # type: ignore[name-defined]
     path = state_path_for(col)
     if not path.exists():
         return {"notes": [], "cards": [], "notetypes": [], "decks": []}
@@ -32,7 +32,7 @@ def load_state(col: Collection) -> dict[str, list[str]]:  # type: ignore[name-de
     return data
 
 
-def save_state(col: Collection, state: dict[str, list[str]]) -> None:  # type: ignore[name-defined]
+def save_state(col: Collection, state: dict[str, Any]) -> None:  # type: ignore[name-defined]
     path = state_path_for(col)
     path.write_text(json.dumps(state, indent=2), "utf-8")
 
@@ -42,8 +42,12 @@ def build_state(
     cards: list[str],
     notetypes: list[str],
     decks: list[str],
-) -> dict[str, list[str]]:
+    *,
+    scope: list[str] | None = None,
+) -> dict[str, Any]:
     return {
+        "version": 2,
+        "scope": sorted(set(scope or [])),
         "notes": sorted(notes),
         "cards": sorted(cards),
         "notetypes": sorted(notetypes),
@@ -52,7 +56,7 @@ def build_state(
 
 
 def compute_local_deletes(
-    snapshot: dict[str, list[str]],
+    snapshot: dict[str, Any],
     local_keys: dict[str, set[str]],
 ) -> dict[str, list[str]]:
     """Return resources in the snapshot but not in local_keys — i.e. locally deleted."""

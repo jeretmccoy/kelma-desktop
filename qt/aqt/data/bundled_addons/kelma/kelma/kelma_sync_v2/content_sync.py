@@ -35,6 +35,16 @@ class ContentSyncConflict(RuntimeError):
         self.conflicts = conflicts
 
 
+class DeletionSafetyError(RuntimeError):
+    def __init__(self, deletes: dict[str, list[str]]) -> None:
+        self.deletes = deletes
+        total = sum(len(values) for values in deletes.values())
+        breakdown = ", ".join(f"{len(values)} {kind}" for kind, values in deletes.items())
+        super().__init__(
+            f"Refusing to delete {total} KelmaSync resources ({breakdown}) without explicit approval"
+        )
+
+
 def _chunks(xs: list, n: int = 3000):
     for i in range(0, len(xs), n):
         yield xs[i:i + n]
@@ -98,30 +108,42 @@ def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], 
 
 
 def _push_local_deletes(col: Collection, client: V2Client, deletes: dict[str, list[str]], progress=None) -> None:
-    """Push DELETE for resources that were removed locally since last sync."""
+    """Push scoped local deletions in transactional 3,000-item batches."""
     total = sum(len(v) for v in deletes.values())
     done = 0
     if progress:
-        progress(f"Deletes: pushing {total} local tombstone(s)…")
-    for guid in deletes.get("notes", []):
-        client.delete_note(guid); done += 1
-        if progress:
-            progress(f"Deletes {done}/{total}: note {guid}")
-    for cid in deletes.get("cards", []):
-        client.delete_card(int(cid)); done += 1
-        if progress:
-            progress(f"Deletes {done}/{total}: card {cid}")
-    for name in deletes.get("decks", []):
-        client.delete_deck(name); done += 1
-        if progress:
-            progress(f"Deletes {done}/{total}: deck {name}")
-    for ntid in deletes.get("notetypes", []):
-        try:
-            client.delete_notetype(int(ntid)); done += 1
+        progress(f"Deletes: pushing {total} approved local tombstone(s) in batches…")
+    resources = (
+        ("notes", deletes.get("notes", [])),
+        ("cards", [int(value) for value in deletes.get("cards", [])]),
+        ("notetypes", [int(value) for value in deletes.get("notetypes", [])]),
+        ("decks", deletes.get("decks", [])),
+    )
+    for resource, values in resources:
+        for chunk in _chunks(list(values), 3000):
+            payload = {"notes": [], "cards": [], "notetypes": [], "decks": []}
+            payload[resource] = chunk
+            client.batch_delete(**payload)
+            done += len(chunk)
             if progress:
-                progress(f"Deletes {done}/{total}: notetype {ntid}")
-        except Exception:
-            pass
+                progress(f"Deletes: {done}/{total} complete ({resource} batch of {len(chunk)})")
+
+
+def _limit_deletes_to_scoped_server(
+    deletes: dict[str, list[str]], manifest: dict[str, Any]
+) -> dict[str, list[str]]:
+    """Never delete an identifier outside the currently scoped server view."""
+    server_keys = {
+        "notes": {str(item.get("guid", "")) for item in manifest.get("notes", [])},
+        "cards": {str(item.get("card_id", "")) for item in manifest.get("cards", [])},
+        "notetypes": {str(item.get("notetype_id", "")) for item in manifest.get("notetypes", [])},
+        "decks": {str(item.get("name", "")) for item in manifest.get("decks", [])},
+    }
+    return {
+        resource: sorted(set(values) & server_keys[resource])
+        for resource, values in deletes.items()
+        if resource in server_keys and set(values) & server_keys[resource]
+    }
 
 
 def sync_content_once(
@@ -132,6 +154,7 @@ def sync_content_once(
     deck_name: str | None = None,
     deck_names: list[str] | None = None,
     apply_note_pulls: bool = True,
+    allow_large_deletes: bool = False,
     progress=None,
 ) -> ContentSyncResult:
     """Run one content sync pass.
@@ -170,6 +193,11 @@ def sync_content_once(
     if progress:
         progress("Phase 3/9: loading previous sync snapshot…")
     snapshot = sync_state.load_state(col)
+    current_scope = sorted(set(deck_names or ([deck_name] if deck_name else [])))
+    previous_scope = snapshot.get("scope")
+    scope_matches = snapshot.get("version") == 2 and previous_scope == current_scope
+    if not scope_matches and progress and any(snapshot.get(key) for key in ("notes", "cards", "notetypes", "decks")):
+        progress("Deletes: routing scope changed (or old snapshot found); resetting deletion baseline without deleting server data")
     # Repair local duplicate generated cards before building manifests. This
     # prevents invalid duplicate cards/blank-GUID duplicate notes from being
     # counted or pushed forever.
@@ -197,12 +225,20 @@ def sync_content_once(
     }
     if progress:
         progress("Phase 5/9: detecting local deletes…")
-    local_deletes = sync_state.compute_local_deletes(snapshot, local_keys)
+    local_deletes = (
+        sync_state.compute_local_deletes(snapshot, local_keys) if scope_matches else {}
+    )
+    local_deletes = _limit_deletes_to_scoped_server(local_deletes, manifest)
+    delete_total = sum(len(values) for values in local_deletes.values())
+    if delete_total > 100 and not allow_large_deletes:
+        raise DeletionSafetyError(local_deletes)
     if local_deletes:
         _push_local_deletes(col, client, local_deletes, progress=progress)
         if progress:
             progress("Deletes changed server state; refreshing manifest…")
         manifest = client.manifest()
+        if deck_names is not None:
+            manifest = _scope_server_manifest_to_decks(client, manifest, deck_names, progress=progress)
     elif progress:
         progress("Deletes: none")
 
@@ -260,6 +296,7 @@ def sync_content_once(
         cards=sorted(local_keys["cards"]),
         notetypes=sorted(local_keys["notetypes"]),
         decks=sorted(local_keys["decks"]),
+        scope=current_scope,
     )
     sync_state.save_state(col, new_state)
 

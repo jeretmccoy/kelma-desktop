@@ -45,6 +45,7 @@ def get() -> dict[str, Any]:
     cfg.setdefault("v2_client_id", "")
     cfg.setdefault("v2_client_label", "Anki plugin")
     cfg.setdefault("v2_last_server_time", "")
+    cfg.setdefault("v2_allow_large_deletes", False)
     return cfg
 
 

@@ -1786,7 +1786,17 @@ def _ensure_v2_vendor() -> None:
 
 def _v2_kelma_deck_names() -> list[str]:
     names = [d.name for d in mw.col.decks.all_names_and_ids()]
-    return config.decks_for_service(consts.KELMA, names)
+    selected = set(config.decks_for_service(consts.KELMA, names))
+    # Lower layers expand selected parents to subdecks. Remove a parent from the
+    # expansion list when any descendant is explicitly routed away, otherwise
+    # that excluded child would be uploaded despite the user's routing choice.
+    return sorted(
+        name for name in selected
+        if not any(
+            candidate.startswith(name + "::") and candidate not in selected
+            for candidate in names
+        )
+    )
 
 
 class V2LoginDialog(QDialog):
@@ -2457,6 +2467,21 @@ class V2SettingsDialog(QDialog):
             grid.addWidget(QLabel(name), row, 0)
             grid.addWidget(widget, row, 1)
 
+        deletion_box = QGroupBox("Server deletion protection")
+        deletion_layout = QVBoxLayout(deletion_box)
+        deletion_help = QLabel(
+            "Routing limits what this client uploads. It never treats a routing change as a deletion. "
+            "More than 100 server deletions are blocked unless you explicitly approve one sync."
+        )
+        deletion_help.setWordWrap(True)
+        deletion_layout.addWidget(deletion_help)
+        self.allow_large_deletes = QCheckBox(
+            "Allow more than 100 KelmaSync deletions on the next successful sync"
+        )
+        self.allow_large_deletes.setChecked(bool(cfg.get("v2_allow_large_deletes", False)))
+        deletion_layout.addWidget(self.allow_large_deletes)
+        layout.addWidget(deletion_box)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
@@ -2469,6 +2494,7 @@ class V2SettingsDialog(QDialog):
         cfg["v2_url"] = self.endpoint.text().strip() or "http://localhost:8081"
         cfg["v2_username"] = self.username.text().strip()
         cfg["v2_client_label"] = self.label.text().strip() or "Anki plugin"
+        cfg["v2_allow_large_deletes"] = self.allow_large_deletes.isChecked()
         config.save(cfg)
         tooltip("KelmaSync v2 settings saved.")
         self.accept()
@@ -3555,7 +3581,7 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
     if client is None:
         return
     try:
-        from kelma_sync_v2.content_sync import ContentSyncConflict, sync_content_once
+        from kelma_sync_v2.content_sync import DeletionSafetyError, ContentSyncConflict, sync_content_once
     except Exception as err:  # noqa: BLE001
         tooltip(f"KelmaSync v2 package import failed: {err}")
         return
@@ -3575,12 +3601,30 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
 
     def _work():
         dlg.progress("Worker started.")
-        return sync_content_once(mw.col, client, since=since, deck_names=deck_names, progress=dlg.progress)
+        return sync_content_once(
+            mw.col,
+            client,
+            since=since,
+            deck_names=deck_names,
+            allow_large_deletes=bool(cfg.get("v2_allow_large_deletes", False)),
+            progress=dlg.progress,
+        )
 
     def _done(future: Future) -> None:
         global _V2_ACTIVE_ACTION
         try:
             result = future.result()
+        except DeletionSafetyError as safety:
+            if _V2_ACTIVE_ACTION == "sync":
+                _V2_ACTIVE_ACTION = None
+            dlg.complete(
+                f"KelmaSync deletion protection stopped the sync: {safety}. "
+                "Review deck routing first. If intentional, open Kelma → KelmaSync account/server "
+                "and approve large deletions for one sync.",
+                ok=False,
+            )
+            tooltip("KelmaSync blocked a large server deletion. Review routing and deletion protection.")
+            return
         except ContentSyncConflict as conflict:
             msg = f"{len(conflict.conflicts)} {conflict.resource} conflict(s). Choose which source wins."
             if _V2_ACTIVE_ACTION == "sync":
@@ -3611,6 +3655,7 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
             return
         cfg2 = config.get()
         cfg2["v2_last_server_time"] = result.server_time
+        cfg2["v2_allow_large_deletes"] = False
         config.save(cfg2)
         # Pulled scheduling/content is a synchronized update, not a local edit.
         _mark_service_synced_for_badges(consts.KELMA)
