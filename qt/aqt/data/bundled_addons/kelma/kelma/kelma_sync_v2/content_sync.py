@@ -102,8 +102,10 @@ def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], 
     scoped["cards"] = [c for c in manifest.get("cards", []) if int(c.get("card_id", 0)) in scoped_card_ids]
     scoped["notes"] = [n for n in manifest.get("notes", []) if str(n.get("guid", "")) in scoped_note_guids]
     scoped["decks"] = [d for d in manifest.get("decks", []) if _in_scope(str(d.get("name", "")))]
-    # Keep notetypes broad enough for pulled scoped notes; local notetypes are
-    # independently restricted to selected local notes.
+    # Filter notetypes to only those used by scoped notes, so a notetype only
+    # used by out-of-scope decks doesn't appear as a false conflict.
+    scoped_note_ntids = {n.get("notetype_id") for n in scoped["notes"] if n.get("notetype_id")}
+    scoped["notetypes"] = [nt for nt in manifest.get("notetypes", []) if nt.get("notetype_id") in scoped_note_ntids]
     return scoped
 
 
