@@ -14,6 +14,7 @@ from typing import Any
 from anki.collection import Collection
 
 from .checksum_rs import (
+    card_checksum,
     card_checksums_batch,
     deck_checksum,
     note_checksum,
