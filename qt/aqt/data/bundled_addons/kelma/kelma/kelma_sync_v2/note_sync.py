@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-_BATCH_SIZE = 1000
+_BATCH_SIZE = 3000
 
 from anki.collection import Collection
 

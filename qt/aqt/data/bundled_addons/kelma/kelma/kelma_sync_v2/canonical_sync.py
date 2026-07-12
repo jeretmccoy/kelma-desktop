@@ -10,6 +10,7 @@ from .client import V2Client
 from .media_sync import sync_media_once
 
 _BATCH = 1000
+_NOTE_BATCH = 3000
 
 
 def push_client_state(
@@ -54,9 +55,10 @@ def push_client_state(
     for kind, entries, record_for in resources:
         if progress:
             progress(f"Publishing {len(entries)} {kind} to KelmaSync…")
-        for start in range(0, len(entries), _BATCH):
+        batch_size = _NOTE_BATCH if kind == "notes" else _BATCH
+        for start in range(0, len(entries), batch_size):
             records = []
-            for item in entries[start:start + _BATCH]:
+            for item in entries[start:start + batch_size]:
                 record = record_for(item)
                 if not record:
                     continue
@@ -77,7 +79,7 @@ def push_client_state(
             response = client.batch_push(payload, force=True)
             totals[kind] += int((response.get("accepted") or {}).get(kind, 0))
             if progress:
-                progress(f"{kind}: {min(start + _BATCH, len(entries))}/{len(entries)} published")
+                progress(f"{kind}: {min(start + batch_size, len(entries))}/{len(entries)} published")
 
     server_manifest = client.manifest()
     media = sync_media_once(
@@ -166,9 +168,10 @@ def push_selected_client_state(
 
         if progress and (records or by_resource[resource]):
             progress(f"Publishing {len(records)} changed {resource} to KelmaSync…")
-        for start in range(0, len(records), _BATCH):
+        batch_size = _NOTE_BATCH if resource == "notes" else _BATCH
+        for start in range(0, len(records), batch_size):
             payload = {"notes": [], "cards": [], "notetypes": [], "decks": []}
-            payload[resource] = records[start:start + _BATCH]
+            payload[resource] = records[start:start + batch_size]
             response = client.batch_push(payload, force=True)
             totals[resource] += int((response.get("accepted") or {}).get(resource, 0))
 
@@ -211,8 +214,8 @@ def mark_selected_state_for_ankiweb(
     card_count = 0
     if note_guids:
         guids = sorted(note_guids)
-        for start in range(0, len(guids), _BATCH):
-            chunk = guids[start:start + _BATCH]
+        for start in range(0, len(guids), _NOTE_BATCH):
+            chunk = guids[start:start + _NOTE_BATCH]
             marks = ",".join("?" for _ in chunk)
             note_count += int(col.db.scalar(
                 f"SELECT count(*) FROM notes WHERE guid IN ({marks})", *chunk
