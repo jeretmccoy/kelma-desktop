@@ -35,7 +35,7 @@ class ContentSyncConflict(RuntimeError):
         self.conflicts = conflicts
 
 
-def _chunks(xs: list, n: int = 1000):
+def _chunks(xs: list, n: int = 3000):
     for i in range(0, len(xs), n):
         yield xs[i:i + n]
 
