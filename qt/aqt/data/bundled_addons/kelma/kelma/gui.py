@@ -2350,11 +2350,14 @@ class V2FullDiffDialog(QDialog):
         def work():
             from kelma_sync_v2 import anki_apply, anki_local
             done = 0
+            # Batch by resource type to avoid thousands of individual HTTP requests.
+            guids = []
+            card_ids = []
+            notetype_ids = []
+            deck_names_list = []
             for entry in entries:
                 if mode == "accept":
                     if self._staged_mode and entry.server is None:
-                        # KelmaSync has no such resource, so choosing Kelma means
-                        # removing the local-only resource from client state.
                         if entry.resource == "guid":
                             anki_apply.delete_note(mw.col, entry.key)
                         elif entry.resource == "name":
@@ -2363,50 +2366,68 @@ class V2FullDiffDialog(QDialog):
                             cid = int((entry.local or {}).get("card_id") or 0)
                             if cid:
                                 anki_apply.delete_card(mw.col, cid)
+                        done += 1
                     elif entry.resource == "guid":
-                        anki_apply.apply_note(mw.col, client.get_note(entry.key))
+                        guids.append(entry.key)
                     elif entry.resource == "notetype_id":
-                        anki_apply.apply_notetype(mw.col, client.get_notetype(int(entry.key)))
+                        notetype_ids.append(int(entry.key))
                     elif entry.resource == "name":
-                        anki_apply.apply_deck(mw.col, client.get_deck(entry.key))
+                        deck_names_list.append(entry.key)
                     elif entry.resource in {"card_id", "logical_key"}:
                         cid = int((entry.server or {}).get("card_id") or entry.key)
-                        anki_apply.apply_card(mw.col, client.get_card(cid))
-                else:  # choose local / force
-                    if self._staged_mode:
-                        # Local already represents Anki/AnkiWeb. Source selection
-                        # must not publish anything until the explicit push step.
-                        done += 1
-                        continue
+                        card_ids.append(cid)
+                else:  # force (push local to server)
+                    # Batch-push local records in one operation per type.
+                    pass
+            # Batch-pull server resources.
+            if guids or card_ids or notetype_ids or deck_names_list:
+                resp = client.batch_pull(
+                    notes=guids, cards=card_ids,
+                    notetypes=notetype_ids, decks=deck_names_list,
+                )
+                for record in resp.get("notes", []):
+                    try: anki_apply.apply_note(mw.col, record); done += 1
+                    except Exception: pass
+                for record in resp.get("cards", []):
+                    try: anki_apply.apply_card(mw.col, record); done += 1
+                    except Exception: pass
+                for record in resp.get("notetypes", []):
+                    try: anki_apply.apply_notetype(mw.col, record); done += 1
+                    except Exception: pass
+                for record in resp.get("decks", []):
+                    try: anki_apply.apply_deck(mw.col, record); done += 1
+                    except Exception: pass
+            # Batch-push local resources for force mode.
+            if mode != "accept" and not self._staged_mode:
+                payload = {"notes": [], "cards": [], "notetypes": [], "decks": []}
+                for entry in entries:
                     if entry.resource == "guid":
                         rec = anki_local.note_record(mw.col, entry.key)
                         if rec:
-                            client.put_note(entry.key, notetype_id=rec["notetype_id"],
-                                fields=rec["fields"], tags=rec["tags"],
-                                client_modified_at=rec["client_modified_at"],
-                                base_checksum="", force=True)
+                            payload["notes"].append({"guid": entry.key, "notetype_id": rec["notetype_id"], "fields": rec["fields"], "tags": rec["tags"], "client_modified_at": rec["client_modified_at"], "base_checksum": ""})
                     elif entry.resource == "notetype_id":
                         rec = anki_local.notetype_record(mw.col, int(entry.key))
                         if rec:
-                            client.put_notetype(int(entry.key), name=rec["name"],
-                                definition=rec["definition"],
-                                client_modified_at=rec["client_modified_at"],
-                                base_checksum="", force=True)
+                            payload["notetypes"].append({"notetype_id": int(entry.key), "name": rec["name"], "definition": rec["definition"], "client_modified_at": rec["client_modified_at"], "base_checksum": ""})
                     elif entry.resource == "name":
                         rec = anki_local.deck_record(mw.col, entry.key)
                         if rec:
-                            client.put_deck(entry.key, config=rec["config"],
-                                client_modified_at=rec["client_modified_at"],
-                                base_checksum="", force=True)
+                            payload["decks"].append({"name": entry.key, "config": rec["config"], "client_modified_at": rec["client_modified_at"], "base_checksum": ""})
                     elif entry.resource in {"card_id", "logical_key"}:
                         cid = int((entry.local or {}).get("card_id") or entry.key)
                         rec = anki_local.card_record(mw.col, cid)
                         if rec:
-                            client.put_card(cid,
-                                note_guid=rec["note_guid"], deck_name=rec["deck_name"],
-                                ord=rec["ord"], scheduling=rec["scheduling"],
-                                client_modified_at=rec["client_modified_at"])
-                done += 1
+                            payload["cards"].append({"card_id": cid, "note_guid": rec["note_guid"], "deck_name": rec["deck_name"], "ord": rec["ord"], "scheduling": rec["scheduling"], "client_modified_at": rec["client_modified_at"]})
+                # Push in 3000-item batches per resource type.
+                for kind in ("notetypes", "decks", "notes", "cards"):
+                    records = payload[kind]
+                    for start in range(0, len(records), 3000):
+                        chunk_payload = {"notes": [], "cards": [], "notetypes": [], "decks": []}
+                        chunk_payload[kind] = records[start:start + 3000]
+                        client.batch_push(chunk_payload, force=True)
+                done += len(entries)
+            elif mode == "accept":
+                pass  # done already counted above
             return done
 
         def done_cb(future: Future) -> None:
