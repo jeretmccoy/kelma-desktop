@@ -3694,8 +3694,14 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
         return
     deck_names = _v2_kelma_deck_names()
     if not deck_names:
-        tooltip("KelmaSync: no decks are picked for KelmaSync. Open Settings → deck routing.")
-        return
+        if config.kelmasync_only():
+            # KelmaDesktop with empty routing = all decks. A fresh collection
+            # has no decks yet, so sync unscoped to pull everything from
+            # the server. Decks are created as notes/cards arrive.
+            deck_names = None
+        else:
+            tooltip("KelmaSync: no decks are picked for KelmaSync. Open Settings → deck routing.")
+            return
     client = _v2_client_or_login()
     if client is None:
         return
@@ -3711,11 +3717,11 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
     dlg = V2SyncProgressDialog(mw)
     dlg.show()
     if also_ankiweb:
-        dlg.progress(f"Reconciliation queued for {len(deck_names)} KelmaSync deck(s).")
+        dlg.progress(f"Reconciliation queued for {len(deck_names) if deck_names else 'all'} KelmaSync deck(s).")
         dlg.progress("Order: inspect local → pull/push AnkiWeb → reconcile KelmaSync → publish AnkiWeb.")
         tooltip("KelmaSync + AnkiWeb: reconciling sources… progress window opened.")
     else:
-        dlg.progress(f"KelmaSync queued for {len(deck_names)} picked deck(s). Waiting for Anki collection worker…")
+        dlg.progress(f"KelmaSync queued for {len(deck_names) if deck_names else 'all'} deck(s). Waiting for Anki collection worker…")
         tooltip("KelmaSync: syncing… progress window opened.")
 
     def _work():
