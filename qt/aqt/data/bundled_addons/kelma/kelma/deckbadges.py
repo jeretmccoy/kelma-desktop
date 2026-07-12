@@ -157,8 +157,7 @@ def _compute_size(shadow_path: str) -> int:
 
 def _refresh_deck_list() -> None:
     try:
-        if mw.state == "deckBrowser":
-            mw.deckBrowser.refresh()
+        mw.deckBrowser.refresh()
     except Exception:  # noqa: BLE001
         pass
 

@@ -2709,9 +2709,11 @@ def _mark_service_synced_for_badges(service: str) -> None:
     path = config.get().get("v2_url", "") if service == consts.KELMA else "AnkiWeb"
     state.mark_synced(st, service, path, mw.col)
     state.save(st)
+    # Always refresh — the deck browser may not be the current state during a
+    # sync (a progress dialog is showing), but when the user returns to it,
+    # the cached render would still show stale +N badges.
     try:
-        if mw.state == "deckBrowser":
-            mw.deckBrowser.refresh()
+        mw.deckBrowser.refresh()
     except Exception:  # noqa: BLE001 - badge refresh is best-effort
         pass
 
@@ -2811,6 +2813,12 @@ class V2SyncProgressDialog(QDialog):
         prefix = "✅" if ok else "⚠"
         self._append_line(f"{prefix} {text}")
         self.close_btn.setEnabled(True)
+        # Refresh the deck browser so badges reflect the just-completed sync,
+        # even if the progress dialog is still visible when the user closes it.
+        try:
+            mw.deckBrowser.refresh()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _v2_preview(record: dict) -> str:
@@ -3803,6 +3811,12 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
         except Exception as err:  # noqa: BLE001
             if _V2_ACTIVE_ACTION == "sync":
                 _V2_ACTIVE_ACTION = None
+            # Even on failure, pulled data is in the collection. Update the
+            # badge baseline so it doesn't show as +N pending.
+            try:
+                _mark_service_synced_for_badges(consts.KELMA)
+            except Exception:  # noqa: BLE001
+                pass
             dlg.complete(f"KelmaSync failed: {err}", ok=False)
             tooltip(f"KelmaSync v2 sync failed: {err}")
             return
