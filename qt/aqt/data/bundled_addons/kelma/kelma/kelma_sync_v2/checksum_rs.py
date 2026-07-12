@@ -86,13 +86,14 @@ def note_checksums_batch(items: list[tuple[list[str], list[str]]]) -> list[str]:
     """
     if not items:
         return []
-    try:
-        payload = json.dumps([{"fields": f, "tags": t} for f, t in items]).encode("utf-8")
-        lines = _run_hash(["-batch"], payload, timeout=120).splitlines()
-        if len(lines) == len(items):
-            return lines
-    except Exception:
-        pass
+    if _binary_path() is not None:
+        try:
+            payload = json.dumps([{"fields": f, "tags": t} for f, t in items]).encode("utf-8")
+            lines = _run_hash(["-batch"], payload, timeout=120).splitlines()
+            if len(lines) == len(items):
+                return lines
+        except Exception:
+            pass
     # Fallback: pure Python (byte-identical, no subprocess).
     return [_checksum_parts_py([f, t]) for f, t in items]
 
@@ -106,6 +107,28 @@ def notetype_checksum(name: str, definition: dict) -> str:
 def deck_checksum(config: dict) -> str:
     """Checksum for a deck config. Pure-Python (verified byte-identical to Rust)."""
     return _checksum_parts_py([config])
+
+
+def card_checksums_batch(items: list[tuple[str, str, int]]) -> list[str]:
+    """Hash card structural identities in one Rust invocation.
+
+    The fallback remains pure Python and byte-identical. Batching avoids tens of
+    thousands of Python JSON encoder/hash object setups on large collections.
+    """
+    if not items:
+        return []
+    if _binary_path() is not None:
+        try:
+            payload = json.dumps([
+                {"parts": [guid, deck_name, int(ord_ or 0)]}
+                for guid, deck_name, ord_ in items
+            ]).encode("utf-8")
+            lines = _run_hash(["-batch"], payload, timeout=120).splitlines()
+            if len(lines) == len(items):
+                return lines
+        except Exception:
+            pass
+    return [_checksum_parts_py([guid, deck_name, int(ord_ or 0)]) for guid, deck_name, ord_ in items]
 
 
 def card_checksum(note_guid: str, deck_name: str, ord_: int, scheduling: dict) -> str:

@@ -9,7 +9,7 @@ from . import anki_local
 from .client import V2Client
 from .media_sync import sync_media_once
 
-_BATCH = 500
+_BATCH = 1000
 
 
 def push_client_state(
@@ -185,6 +185,70 @@ def push_selected_client_state(
         )
         totals["media"] = media.uploaded
     return totals
+
+
+def mark_selected_state_for_ankiweb(
+    col: Collection,
+    changes: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Mark only joint-state choices that differ from AnkiWeb as pending.
+
+    Deletions already have graves from the apply step. Deck/notetype manager
+    updates carry their own sync metadata, so only changed notes and scheduling
+    cards need explicit ``usn=-1`` stamps here.
+    """
+    note_guids = {
+        str(change["key"])
+        for change in changes
+        if change.get("resource") == "notes"
+    }
+    card_keys = {
+        str(change["key"])
+        for change in changes
+        if change.get("resource") == "cards"
+    }
+    note_count = 0
+    card_count = 0
+    if note_guids:
+        guids = sorted(note_guids)
+        for start in range(0, len(guids), _BATCH):
+            chunk = guids[start:start + _BATCH]
+            marks = ",".join("?" for _ in chunk)
+            note_count += int(col.db.scalar(
+                f"SELECT count(*) FROM notes WHERE guid IN ({marks})", *chunk
+            ) or 0)
+            col.db.execute(f"UPDATE notes SET usn=-1 WHERE guid IN ({marks})", *chunk)
+    parsed_cards = [
+        (key.rsplit(":", 1)[0], int(key.rsplit(":", 1)[1]))
+        for key in sorted(card_keys)
+    ]
+    # Two bind variables per logical key; 400 stays below conservative SQLite
+    # variable limits while replacing thousands of per-card queries.
+    for start in range(0, len(parsed_cards), 400):
+        chunk = parsed_cards[start:start + 400]
+        values_sql = ",".join("(?,?)" for _ in chunk)
+        args = [value for pair in chunk for value in pair]
+        card_count += int(col.db.scalar(
+            f"""
+            WITH wanted(guid, ord) AS (VALUES {values_sql})
+            SELECT count(*) FROM cards c
+            JOIN notes n ON n.id=c.nid
+            JOIN wanted w ON w.guid=n.guid AND w.ord=c.ord
+            """,
+            *args,
+        ) or 0)
+        col.db.execute(
+            f"""
+            WITH wanted(guid, ord) AS (VALUES {values_sql})
+            UPDATE cards SET usn=-1 WHERE id IN (
+                SELECT c.id FROM cards c
+                JOIN notes n ON n.id=c.nid
+                JOIN wanted w ON w.guid=n.guid AND w.ord=c.ord
+            )
+            """,
+            *args,
+        )
+    return note_count, card_count
 
 
 def mark_client_state_for_ankiweb(col: Collection, deck_names: list[str]) -> tuple[int, int]:

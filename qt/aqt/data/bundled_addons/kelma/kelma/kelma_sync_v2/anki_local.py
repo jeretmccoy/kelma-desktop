@@ -13,7 +13,13 @@ from typing import Any
 
 from anki.collection import Collection
 
-from .checksum_rs import note_checksum, note_checksums_batch, notetype_checksum, deck_checksum, card_checksum
+from .checksum_rs import (
+    card_checksums_batch,
+    deck_checksum,
+    note_checksum,
+    note_checksums_batch,
+    notetype_checksum,
+)
 
 
 def iso_from_anki_mod(mod_seconds: int) -> str:
@@ -245,10 +251,16 @@ def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[
             "ord": int(ord_ or 0),
             "deck_name": deck_name,
             "logical_key": f"{guid or ''}:{int(ord_ or 0)}",
-            "checksum": card_checksum(guid or "", deck_name, int(ord_ or 0), scheduling),
+            "checksum": "",
             "scheduling": scheduling,
             "modified_at": iso_from_anki_mod(int(mod or 0)),
         })
+    checksums = card_checksums_batch([
+        (item["note_guid"], item["deck_name"], item["ord"])
+        for item in out
+    ])
+    for item, checksum in zip(out, checksums):
+        item["checksum"] = checksum
     return out
 
 

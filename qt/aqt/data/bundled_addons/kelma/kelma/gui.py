@@ -31,6 +31,7 @@ from aqt.qt import (
     QHeaderView,
     QLabel,
     QInputDialog,
+    QKeySequence,
     QLineEdit,
     QMenu,
     QPushButton,
@@ -2898,6 +2899,7 @@ class V2JointStateDialog(QDialog):
         self._rows: list[tuple[str, str]] = []
         self._row_values: list[dict[str, dict | None]] = []
         self._choices: list[QComboBox] = []
+        self._conflict_indices: list[int] = []
         self._kelma_changes: list[dict] = []
         self._ankiweb_changes: list[dict] = []
         self._note_previews: dict[str, str] = {}
@@ -2922,6 +2924,22 @@ class V2JointStateDialog(QDialog):
             "⚠ Ambiguous changes stay unselected until you decide."
         )
         layout.addWidget(guidance)
+
+        self.batch_box = QGroupBox("Resolve many conflicts at once")
+        batch_layout = QHBoxLayout(self.batch_box)
+        batch_layout.addWidget(QLabel("For every unresolved conflict, keep:"))
+        for label, source in (
+            ("Newest existing", "Newest"),
+            ("This computer", "Client"),
+            ("AnkiWeb", "AnkiWeb"),
+            ("KelmaSync", "KelmaSync"),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(lambda _=False, selected=source: self._batch_choose(selected))
+            batch_layout.addWidget(button)
+        batch_layout.addStretch()
+        self.batch_box.setVisible(False)
+        layout.addWidget(self.batch_box)
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Item", "What happened", "What should be kept?", ""])
@@ -3210,6 +3228,7 @@ class V2JointStateDialog(QDialog):
         self._rows.clear()
         self._row_values.clear()
         self._choices.clear()
+        self._conflict_indices.clear()
         self._load_note_previews()
         rows = []
         counts = Counter()
@@ -3229,6 +3248,8 @@ class V2JointStateDialog(QDialog):
         for row, (resource, key, values, suggested, reason) in enumerate(rows):
             self._rows.append((resource, key))
             self._row_values.append(values)
+            if suggested is None:
+                self._conflict_indices.append(row)
             item_cell = QTableWidgetItem(self._item_label(resource, key, values))
             explanation = self._difference_text(resource, values) + "\n\n" + reason
             difference_cell = QTableWidgetItem(explanation)
@@ -3259,6 +3280,7 @@ class V2JointStateDialog(QDialog):
             )
             self.table.setCellWidget(row, 3, details)
             self.table.resizeRowToContents(row)
+        self.batch_box.setVisible(bool(self._conflict_indices))
         if rows:
             summary = ", ".join(f"{count} {resource}" for resource, count in counts.items() if resource in ("notes", "cards", "notetypes", "decks"))
             conflict_text = (
@@ -3272,6 +3294,42 @@ class V2JointStateDialog(QDialog):
         else:
             self.status.setText("Everything matches across this computer, AnkiWeb, and KelmaSync. You are already up to date.")
             self.apply_btn.setEnabled(False)
+
+    def _batch_choose(self, source: str) -> None:
+        changed = 0
+        skipped = 0
+        for row in self._conflict_indices:
+            values = self._row_values[row]
+            selected = source
+            if source == "Newest":
+                candidates = [
+                    (self._modified_sort_value(item), name)
+                    for name, item in values.items()
+                    if item is not None
+                ]
+                if not candidates:
+                    skipped += 1
+                    continue
+                newest_time = max(value for value, _name in candidates)
+                newest = [name for value, name in candidates if value == newest_time]
+                if newest_time < 0 or len(newest) != 1:
+                    skipped += 1
+                    continue
+                selected = newest[0]
+            elif values.get(source) is None:
+                # Batch source buttons never perform deletions. Deletion remains
+                # an explicit per-row choice so one click cannot erase data.
+                skipped += 1
+                continue
+            index = self._choices[row].findData(selected)
+            if index >= 0:
+                self._choices[row].setCurrentIndex(index)
+                changed += 1
+            else:
+                skipped += 1
+        self._update_apply_state()
+        suffix = f" {skipped} skipped to avoid deletion or an ambiguous tie." if skipped else ""
+        self.status.setText(f"Batch choice applied to {changed} conflict(s).{suffix}")
 
     def _update_apply_state(self, _index: int = -1) -> None:
         unresolved = sum(choice.currentData() is None for choice in self._choices)
@@ -3404,8 +3462,8 @@ class V2JointStateDialog(QDialog):
             self.status.setText(f"Preparing {len(self._ankiweb_changes)} selected change(s) for AnkiWeb…")
 
             def work():
-                from kelma_sync_v2.canonical_sync import mark_client_state_for_ankiweb
-                return mark_client_state_for_ankiweb(mw.col, self._deck_names)
+                from kelma_sync_v2.canonical_sync import mark_selected_state_for_ankiweb
+                return mark_selected_state_for_ankiweb(mw.col, self._ankiweb_changes)
 
             def prepared(future: Future) -> None:
                 try:
@@ -3672,10 +3730,16 @@ def _build_menu() -> None:
 
     if config.kelmasync_only():
         act_sync = QAction("Sync KelmaSync", mw)
+        act_sync.setShortcut(QKeySequence.StandardKey.Save)
+        act_sync.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        act_sync.setToolTip("Sync KelmaSync (Ctrl+S / Command+S)")
         act_sync.triggered.connect(lambda: _v2_test_sync_notes(also_ankiweb=False))
         menu.addAction(act_sync)
     else:
-        act_staged = QAction("Open joint-state sync…", mw)
+        act_staged = QAction("Review and sync changes…", mw)
+        act_staged.setShortcut(QKeySequence.StandardKey.Save)
+        act_staged.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        act_staged.setToolTip("Review and sync changes (Ctrl+S / Command+S)")
         act_staged.triggered.connect(_v2_sync_menu)
         menu.addAction(act_staged)
 
