@@ -91,6 +91,102 @@ def push_client_state(
     return totals
 
 
+def push_selected_client_state(
+    col: Collection,
+    client: V2Client,
+    *,
+    changes: list[dict[str, Any]],
+    deck_names: list[str],
+    progress=None,
+) -> dict[str, int]:
+    """Publish only joint-state decisions that differ from KelmaSync.
+
+    ``changes`` contains resource/key pairs and the old server manifest item.
+    The chosen value has already been applied to ``col``. This avoids the old
+    behavior of force-uploading the entire routed collection when KelmaSync
+    already supplied the chosen versions.
+    """
+    totals = {"notetypes": 0, "decks": 0, "notes": 0, "cards": 0, "media": 0, "deleted": 0}
+    by_resource: dict[str, list[dict[str, Any]]] = {
+        "notetypes": [], "decks": [], "notes": [], "cards": [],
+    }
+    for change in changes:
+        resource = str(change["resource"])
+        if resource in by_resource:
+            by_resource[resource].append(change)
+
+    def local_record(resource: str, key: str):
+        if resource == "notes":
+            return anki_local.note_record(col, key)
+        if resource == "notetypes":
+            return anki_local.notetype_record(col, int(key))
+        if resource == "decks":
+            return anki_local.deck_record(col, key)
+        guid, ord_text = key.rsplit(":", 1)
+        card_id = col.db.scalar(
+            "SELECT c.id FROM cards c JOIN notes n ON n.id=c.nid "
+            "WHERE n.guid=? AND c.ord=? ORDER BY c.id LIMIT 1",
+            guid, int(ord_text),
+        )
+        return anki_local.card_record(col, int(card_id)) if card_id else None
+
+    def delete_server(resource: str, key: str, server_item: dict[str, Any] | None) -> None:
+        if not server_item:
+            return
+        if resource == "notes":
+            client.delete_note(key)
+        elif resource == "cards" and server_item.get("card_id"):
+            client.delete_card(int(server_item["card_id"]))
+        elif resource == "notetypes":
+            client.delete_notetype(int(key))
+        elif resource == "decks":
+            client.delete_deck(key)
+        totals["deleted"] += 1
+
+    for resource in ("decks", "notetypes", "notes", "cards"):
+        records = []
+        for change in by_resource[resource]:
+            key = str(change["key"])
+            record = local_record(resource, key)
+            if record is None:
+                delete_server(resource, key, change.get("server_item"))
+                continue
+            if resource == "notes":
+                record = {k: record[k] for k in ("guid", "notetype_id", "fields", "tags", "client_modified_at")}
+                record["base_checksum"] = ""
+            elif resource == "cards":
+                record = {k: record[k] for k in ("card_id", "note_guid", "deck_name", "ord", "scheduling", "client_modified_at")}
+            elif resource == "notetypes":
+                record = {k: record[k] for k in ("notetype_id", "name", "definition", "client_modified_at")}
+                record["base_checksum"] = ""
+            else:
+                record = {k: record[k] for k in ("name", "config", "client_modified_at")}
+                record["base_checksum"] = ""
+            records.append(record)
+
+        if progress and (records or by_resource[resource]):
+            progress(f"Publishing {len(records)} changed {resource} to KelmaSync…")
+        for start in range(0, len(records), _BATCH):
+            payload = {"notes": [], "cards": [], "notetypes": [], "decks": []}
+            payload[resource] = records[start:start + _BATCH]
+            response = client.batch_push(payload, force=True)
+            totals[resource] += int((response.get("accepted") or {}).get(resource, 0))
+
+    # Media can only have become newly relevant when note content changed.
+    if by_resource["notes"]:
+        if progress:
+            progress("Checking media referenced by the changed notes…")
+        media = sync_media_once(
+            col,
+            client,
+            client.manifest(),
+            progress=progress,
+            deck_names=deck_names,
+        )
+        totals["media"] = media.uploaded
+    return totals
+
+
 def mark_client_state_for_ankiweb(col: Collection, deck_names: list[str]) -> tuple[int, int]:
     """Mark scoped notes/cards pending so native AnkiWeb publishes local state."""
     dids = anki_local._deck_ids_for_names(col, deck_names)

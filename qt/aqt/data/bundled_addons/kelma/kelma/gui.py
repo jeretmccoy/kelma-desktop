@@ -2884,6 +2884,7 @@ class V2JointStateDialog(QDialog):
         self._rows: list[tuple[str, str]] = []
         self._row_values: list[dict[str, dict | None]] = []
         self._choices: list[QComboBox] = []
+        self._kelma_changes: list[dict] = []
         self._note_previews: dict[str, str] = {}
         self._deck_names = _v2_kelma_deck_names()
 
@@ -2905,7 +2906,6 @@ class V2JointStateDialog(QDialog):
             "✓ Clear newest changes are selected automatically.  "
             "⚠ Ambiguous changes stay unselected until you decide."
         )
-        guidance.setStyleSheet("color: palette(mid);")
         layout.addWidget(guidance)
 
         self.table = QTableWidget(0, 4)
@@ -3273,6 +3273,16 @@ class V2JointStateDialog(QDialog):
             self._update_apply_state()
             return
         decisions = [(resource, key, str(selected[i])) for i, (resource, key) in enumerate(self._rows)]
+        self._kelma_changes = []
+        for resource, key, source in decisions:
+            chosen = self._sources[resource][source].get(key)
+            kelma = self._sources[resource]["KelmaSync"].get(key)
+            if self._fingerprint(resource, chosen) != self._fingerprint(resource, kelma):
+                self._kelma_changes.append({
+                    "resource": resource,
+                    "key": key,
+                    "server_item": kelma,
+                })
         client = self._client
         temp_path = str(Path(self._temp_dir or "") / "collection.anki2")
         self.apply_btn.setEnabled(False)
@@ -3338,8 +3348,13 @@ class V2JointStateDialog(QDialog):
             for choice in self._choices:
                 choice.setEnabled(False)
             self.apply_btn.setEnabled(False)
+            kelma_text = (
+                f"{len(self._kelma_changes)} change(s) need publishing to KelmaSync"
+                if self._kelma_changes
+                else "KelmaSync already has every chosen version"
+            )
             self.status.setText(
-                f"Applied {count} change(s) to this computer. Publish once to update both KelmaSync and AnkiWeb."
+                f"Applied {count} change(s) to this computer. {kelma_text}; AnkiWeb still needs publishing."
             )
             self.publish_btn.setEnabled(True)
             self.publish_btn.setDefault(True)
@@ -3348,22 +3363,11 @@ class V2JointStateDialog(QDialog):
 
     def _publish_everywhere(self) -> None:
         self.publish_btn.setEnabled(False)
-        self.status.setText("Publishing to KelmaSync…")
 
-        def push_kelma():
-            from kelma_sync_v2.canonical_sync import push_client_state
-            return push_client_state(mw.col, self._client, deck_names=self._deck_names)
+        def prepare_ankiweb() -> None:
+            self.status.setText("Preparing the chosen result for AnkiWeb…")
 
-        def kelma_done(future: Future) -> None:
-            try:
-                future.result()
-            except Exception as err:  # noqa: BLE001
-                self.status.setText(f"Could not publish to KelmaSync: {err}")
-                self.publish_btn.setEnabled(True)
-                return
-            self.status.setText("KelmaSync updated. Preparing AnkiWeb…")
-
-            def prepare_ankiweb():
+            def work():
                 from kelma_sync_v2.canonical_sync import mark_client_state_for_ankiweb
                 return mark_client_state_for_ankiweb(mw.col, self._deck_names)
 
@@ -3371,7 +3375,7 @@ class V2JointStateDialog(QDialog):
                 try:
                     future.result()
                 except Exception as err:  # noqa: BLE001
-                    self.status.setText(f"KelmaSync was updated, but AnkiWeb preparation failed: {err}")
+                    self.status.setText(f"Could not prepare AnkiWeb: {err}")
                     self.publish_btn.setEnabled(True)
                     return
                 self.status.setText("Publishing to AnkiWeb…")
@@ -3381,12 +3385,41 @@ class V2JointStateDialog(QDialog):
                         self.status.setText("Done — this computer, AnkiWeb, and KelmaSync now have the chosen result.")
                         self.publish_btn.setText("Published everywhere ✓")
                     else:
-                        self.status.setText(f"KelmaSync was updated, but AnkiWeb failed: {text}")
+                        self.status.setText(f"AnkiWeb publish failed: {text}")
                         self.publish_btn.setEnabled(True)
 
                 _v2_run_ankiweb_sync(done=synced)
 
-            mw.taskman.run_in_background(prepare_ankiweb, prepared, uses_collection=True)
+            mw.taskman.run_in_background(work, prepared, uses_collection=True)
+
+        if not self._kelma_changes:
+            self.status.setText("KelmaSync already has the chosen result. Skipping directly to AnkiWeb…")
+            prepare_ankiweb()
+            return
+
+        self.status.setText(f"Publishing {len(self._kelma_changes)} selected change(s) to KelmaSync…")
+
+        def progress(text: str) -> None:
+            mw.taskman.run_on_main(lambda message=text: self.status.setText(message))
+
+        def push_kelma():
+            from kelma_sync_v2.canonical_sync import push_selected_client_state
+            return push_selected_client_state(
+                mw.col,
+                self._client,
+                changes=self._kelma_changes,
+                deck_names=self._deck_names,
+                progress=progress,
+            )
+
+        def kelma_done(future: Future) -> None:
+            try:
+                future.result()
+            except Exception as err:  # noqa: BLE001
+                self.status.setText(f"Could not publish the selected changes to KelmaSync: {err}")
+                self.publish_btn.setEnabled(True)
+                return
+            prepare_ankiweb()
 
         mw.taskman.run_in_background(push_kelma, kelma_done, uses_collection=True)
 
