@@ -77,7 +77,10 @@ def set_value(key: str, value: Any) -> None:
 def has_credentials(service: str) -> bool:
     cfg = get()
     if service == consts.KELMA:
-        return bool(cfg["kelmasync_hkey"])
+        # KelmaSync v2 stores a bearer token. The legacy host key may remain on
+        # upgraded profiles, but fresh Desktop/Mobile-era logins only have
+        # v2_token and must still show badges/account state.
+        return bool(cfg.get("v2_token") or cfg.get("kelmasync_hkey"))
     return bool(cfg["ankiweb_hkey"])
 
 
