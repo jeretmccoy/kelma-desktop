@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from itertools import islice
 import mimetypes
+import os
 import re
 import time
 from typing import Iterable
@@ -86,20 +87,30 @@ def sync_media_once(
         if progress:
             progress("Media: fetching server media manifest…")
         server_manifest = client.manifest()
-    server_files = {str(e.get("filename")) for e in (server_manifest.get("media", []) or []) if e.get("filename")}
+    server_files = {
+        str(e.get("filename"))
+        for e in (server_manifest.get("media", []) or [])
+        if e.get("filename")
+    }
+    server_file_keys = {_media_name_key(name) for name in server_files}
 
     if progress:
-        progress("Media: scanning note fields for referenced files…")
+        progress("Media: scanning note references and local directory once…")
     refs = sorted(referenced_media_filenames(col, deck_names=deck_names))
-    ref_set = set(refs)
+    ref_keys = {_media_name_key(name) for name in refs}
+    local_files = _local_media_files(media_dir)
     total = len(refs)
-    if progress:
-        progress(f"Media: {total} referenced local files; planning uploads…")
 
     uploads: list[tuple[str, Path, int]] = []
+    already_on_server = 0
     for filename in refs:
-        path = _safe_media_path(media_dir, filename)
-        if not path.exists() or not path.is_file() or filename in server_files:
+        key = _media_name_key(filename)
+        path = local_files.get(key)
+        if key in server_file_keys:
+            already_on_server += 1
+            result.skipped += 1
+            continue
+        if path is None:
             result.skipped += 1
             continue
         uploads.append((filename, path, path.stat().st_size))
@@ -109,8 +120,8 @@ def sync_media_once(
     uploaded_bytes = 0
     if progress:
         progress(
-            f"Media: uploading {upload_total} files "
-            f"({_format_mib(upload_bytes_total)}) with 50 connections…"
+            f"Media upload plan: {already_on_server}/{total} references already on "
+            f"KelmaSync; {upload_total} new file(s) ({_format_mib(upload_bytes_total)})"
         )
 
     def upload_one(item: tuple[str, Path, int]) -> tuple[str, int]:
@@ -140,6 +151,7 @@ def sync_media_once(
             for future in completed:
                 filename, size = future.result()
                 server_files.add(filename)
+                server_file_keys.add(_media_name_key(filename))
                 result.uploaded += 1
                 uploaded_bytes += size
                 if progress and (
@@ -163,13 +175,28 @@ def sync_media_once(
     # blobs referenced by notes in this Kelma deck scope; otherwise a dual-sync
     # Anki client would download media belonging to AnkiWeb-only decks.
     server_entries = [
-        entry for entry in (server_manifest.get("media", []) or [])
-        if entry.get("filename") in ref_set
+        entry
+        for entry in (server_manifest.get("media", []) or [])
+        if entry.get("filename")
+        and _media_name_key(str(entry.get("filename"))) in ref_keys
     ]
-    total_downloads = len(server_entries)
+    missing_entries: list[dict] = []
+    scheduled_keys: set[str] = set()
+    already_local = 0
+    for entry in server_entries:
+        filename = str(entry.get("filename"))
+        key = _media_name_key(filename)
+        if key in local_files or key in scheduled_keys:
+            already_local += 1
+            result.skipped += 1
+            continue
+        scheduled_keys.add(key)
+        missing_entries.append(entry)
+    total_downloads = len(missing_entries)
     if progress:
         progress(
-            f"Media: checking/downloading {total_downloads} server files with 50 connections…"
+            f"Media download plan: {already_local}/{len(server_entries)} referenced "
+            f"server files already local; {total_downloads} missing file(s)"
         )
 
     def download_one(entry: dict) -> str:
@@ -177,11 +204,6 @@ def sync_media_once(
         if not filename:
             return "skipped"
         path = _safe_media_path(media_dir, str(filename))
-        # Ask the filesystem rather than comparing directory-entry strings.
-        # Default macOS volumes are case-insensitive, so case aliases identify
-        # the same local file even when Python strings differ.
-        if path.exists() and path.is_file():
-            return "skipped"
         last_error: Exception | None = None
         for attempt in range(3):
             try:
@@ -213,7 +235,7 @@ def sync_media_once(
         assert last_error is not None
         raise last_error
 
-    download_iter = iter(server_entries)
+    download_iter = iter(missing_entries)
     checked = 0
     with ThreadPoolExecutor(max_workers=50, thread_name_prefix="kelma-media") as pool:
         pending = {
@@ -243,7 +265,10 @@ def sync_media_once(
                 pending.add(pool.submit(download_one, entry))
 
     if progress:
-        progress(f"Media complete: uploaded {result.uploaded}, downloaded {result.downloaded}, skipped {result.skipped}")
+        progress(
+            f"Media complete: uploaded {result.uploaded} new, downloaded "
+            f"{result.downloaded} missing; {result.skipped} already present/unreferenced"
+        )
     return result
 
 
@@ -262,12 +287,33 @@ def _clean_media_name(name: str) -> str:
     return name
 
 
+def _media_name_key(filename: str) -> str:
+    """Anki treats case aliases as one media name on Windows/macOS.
+
+    Using one normalized key also prevents case-colliding server entries from
+    scheduling duplicate workers for the same destination.
+    """
+    return filename.casefold()
+
+
+def _local_media_files(media_dir: Path) -> dict[str, Path]:
+    """Index the flat Anki media directory in one OS call.
+
+    This replaces tens of thousands of Path.resolve()/exists() calls, which are
+    disproportionately expensive on NTFS and trigger repeated antivirus work.
+    """
+    files: dict[str, Path] = {}
+    with os.scandir(media_dir) as entries:
+        for entry in entries:
+            if entry.is_file(follow_symlinks=False):
+                files.setdefault(_media_name_key(entry.name), Path(entry.path))
+    return files
+
+
 def _safe_media_path(media_dir: Path, filename: str) -> Path:
     clean = _clean_media_name(filename)
     if not clean:
         raise ValueError(f"unsafe media filename: {filename!r}")
-    path = (media_dir / clean).resolve()
-    root = media_dir.resolve()
-    if root not in path.parents and path != root:
-        raise ValueError(f"media path escapes directory: {filename!r}")
-    return path
+    # _clean_media_name rejects both path separator styles and dot segments, so
+    # joining the single filename is safe without expensive filesystem resolve.
+    return media_dir / clean
