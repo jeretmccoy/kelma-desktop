@@ -64,6 +64,8 @@ def _v2_active_message() -> str | None:
         return "AnkiWeb sync is already running. Please wait for it to finish."
     if _V2_ACTIVE_ACTION == "compare":
         return "A KelmaSync compare is already running. Please wait for it to finish."
+    if _V2_ACTIVE_ACTION == "reset":
+        return "Local data is being reset for a fresh KelmaSync restore."
     return None
 
 _CHECKABLE = Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
@@ -3759,6 +3761,89 @@ def run_kelma_desktop_sync() -> None:
     _v2_test_sync_notes(also_ankiweb=False)
 
 
+def _v2_delete_and_restore_from_server() -> None:
+    """Delete local Desktop content/media, preserve auth, then restore v2."""
+    global _V2_ACTIVE_ACTION
+    if _v2_active_message():
+        tooltip(_v2_active_message() or "KelmaSync is busy.")
+        return
+    if not askUser(
+        "Delete local data and restore from KelmaSync?\n\n"
+        "This deletes all notes, cards, deck data, and media stored in KelmaDesktop, "
+        "then downloads the server copy. Local reviews or edits that have not reached "
+        "KelmaSync will be lost.\n\nA collection backup is created first. Your Kelma "
+        "Immersion login is preserved.",
+        parent=mw,
+    ):
+        return
+    if _v2_client_or_login() is None:
+        return
+
+    _V2_ACTIVE_ACTION = "reset"
+    dialog = V2SyncProgressDialog(mw)
+    dialog.show()
+    dialog.progress("Creating a collection backup before local reset…")
+
+    def reset_work() -> dict[str, int]:
+        mw.create_backup_now()
+        col = mw.col
+        note_ids = [int(value) for value in col.db.list("SELECT id FROM notes")]
+        for start in range(0, len(note_ids), 1000):
+            col.remove_notes(note_ids[start:start + 1000])
+
+        # remove_notes normally removes every card; clean up any orphan rows.
+        card_ids = [int(value) for value in col.db.list("SELECT id FROM cards")]
+        if card_ids:
+            col.remove_cards(card_ids)
+
+        deck_ids = [
+            int(value)
+            for value in col.db.list("SELECT id FROM decks WHERE id != 1")
+        ]
+        if deck_ids:
+            col.decks.remove(deck_ids)
+
+        media_dir = Path(col.media.dir())
+        media_removed = 0
+        if media_dir.exists():
+            for path in media_dir.iterdir():
+                if path.is_file():
+                    path.unlink()
+                    media_removed += 1
+        # Native graves describe the reset, not deletions to publish elsewhere.
+        col.db.execute("DELETE FROM graves")
+        return {
+            "notes": len(note_ids),
+            "cards": len(card_ids),
+            "decks": len(deck_ids),
+            "media": media_removed,
+        }
+
+    def reset_done(future: Future) -> None:
+        global _V2_ACTIVE_ACTION
+        try:
+            removed = future.result()
+        except Exception as err:  # noqa: BLE001
+            _V2_ACTIVE_ACTION = None
+            dialog.complete(f"Could not reset local KelmaDesktop data: {err}", ok=False)
+            return
+        cfg = config.get()
+        cfg["v2_last_server_time"] = ""
+        cfg["v2_allow_large_deletes"] = False
+        config.save(cfg)
+        _V2_ACTIVE_ACTION = None
+        dialog.complete(
+            "Local reset complete: "
+            f"{removed['notes']} notes, {removed['cards']} remaining cards, "
+            f"{removed['decks']} decks, and {removed['media']} files removed. "
+            "Starting a fresh server restore…",
+            ok=True,
+        )
+        _v2_test_sync_notes(also_ankiweb=False)
+
+    mw.taskman.run_in_background(reset_work, reset_done, uses_collection=True)
+
+
 def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
     """Reconcile AnkiWeb → local ↔ KelmaSync → AnkiWeb.
 
@@ -3986,6 +4071,13 @@ def _build_menu() -> None:
         act_sync.setToolTip("Sync KelmaSync (Ctrl+S / Command+S)")
         act_sync.triggered.connect(run_kelma_desktop_sync)
         menu.addAction(act_sync)
+
+        act_restore = QAction("Delete local data and restore from server…", mw)
+        act_restore.setToolTip(
+            "Back up, delete local KelmaDesktop content/media, and restore KelmaSync"
+        )
+        act_restore.triggered.connect(_v2_delete_and_restore_from_server)
+        menu.addAction(act_restore)
     else:
         act_staged = QAction("Review and sync changes…", mw)
         act_staged.setShortcut(QKeySequence.StandardKey.Save)
