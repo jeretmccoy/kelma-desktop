@@ -46,7 +46,7 @@ from aqt.qt import (
 )
 from aqt.utils import tooltip, askUser
 
-from . import auth, branding, capabilities, config, consts, deckbadges, engine, features, inspect, state
+from . import auth, branding, capabilities, config, consts, deckbadges, engine, features, inspect, state, updater
 
 _orig_sync = None
 _V2_ACTIVE_ACTION: str | None = None
@@ -4105,6 +4105,9 @@ def _build_menu() -> None:
     menu.addAction(act_logout)
 
     menu.addSeparator()
+    act_updates = QAction("Check for Kelma updates…", mw)
+    act_updates.triggered.connect(lambda: updater.check_for_update(manual=True))
+    menu.addAction(act_updates)
     _build_display_menu(menu)
 
 
@@ -4154,6 +4157,7 @@ def setup() -> None:
         ("menu", _build_menu),
         ("sync hook", _install_sync_hook),
         ("deck badges", deckbadges.setup),
+        ("update check", updater.schedule_automatic_check),
     ]
     if config.kelmasync_only():
         # KelmaDesktop must never fall through to Anki's native AnkiWeb login or

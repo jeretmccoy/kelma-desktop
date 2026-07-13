@@ -14,7 +14,7 @@ from pathlib import Path
 from anki.collection import GithubRelease, Progress
 from anki.utils import is_mac, is_win
 from aqt.progress import ProgressUpdate
-from aqt.utils import openLink, tr
+from aqt.utils import openFolder, openLink, showInfo, tr
 
 
 # ruff: noqa: F401
@@ -186,15 +186,27 @@ def _fix_win_taskbar_pinning() -> None:
 def download_github_update_and_install(release: GithubRelease) -> None:
     from aqt import mw
 
+    linux_archive = release.filename.endswith(".zst")
     if release.filename.endswith(".msi"):
         args = ["msiexec", "/i"]
     elif release.filename.endswith(".dmg"):
         args = ["open"]
+    elif linux_archive:
+        args = []
     else:
         openLink(release.url)
         return
 
     def on_success(output_path: str) -> None:
+        if linux_archive:
+            openFolder(os.path.dirname(output_path))
+            showInfo(
+                "The Kelma Desktop update was downloaded and SHA-256 verified. "
+                "Close Kelma, extract the highlighted Linux archive over your "
+                "current installation, then reopen it.",
+                parent=mw,
+            )
+            return
         with contextlib.suppress(ResourceWarning):
             creationflags = 0
             if sys.platform == "win32":
