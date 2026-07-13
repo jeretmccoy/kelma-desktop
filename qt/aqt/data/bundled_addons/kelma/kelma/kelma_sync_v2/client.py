@@ -7,6 +7,7 @@ build manifests from the local collection and call this client.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import gzip
 import json
 import urllib.error
 import urllib.parse
@@ -269,7 +270,13 @@ class V2Client:
         else:
             data = json.dumps(body).encode("utf-8")
 
-        headers = {"User-Agent": "KelmaSync-v2 Python client"}
+        # Full manifests are several megabytes uncompressed. Request gzip so a
+        # transient tunnel stream cannot leave Desktop waiting on a large JSON
+        # response after the server has already completed the request.
+        headers = {
+            "User-Agent": "KelmaSync-v2 Python client",
+            "Accept-Encoding": "gzip",
+        }
         if data is not None:
             headers["Content-Type"] = content_type
         if auth:
@@ -282,10 +289,15 @@ class V2Client:
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return resp.read()
+                raw = resp.read()
+                if resp.headers.get("Content-Encoding", "").lower() == "gzip":
+                    return gzip.decompress(raw)
+                return raw
         except urllib.error.HTTPError as err:
             payload: Any = None
             raw = err.read()
+            if raw and err.headers.get("Content-Encoding", "").lower() == "gzip":
+                raw = gzip.decompress(raw)
             if raw:
                 try:
                     payload = json.loads(raw.decode("utf-8"))
