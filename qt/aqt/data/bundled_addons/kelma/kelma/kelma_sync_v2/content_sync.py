@@ -50,6 +50,70 @@ def _chunks(xs: list, n: int = 3000):
         yield xs[i:i + n]
 
 
+def _server_used_notetype_ids(
+    client: V2Client, manifest: dict[str, Any], progress=None
+) -> set[int]:
+    notes = list(manifest.get("notes", []))
+    if not notes:
+        return set()
+    if all(note.get("notetype_id") is not None for note in notes):
+        return {int(note["notetype_id"]) for note in notes}
+
+    # Compatibility with older/self-hosted servers whose note manifest predates
+    # notetype_id. Pull in 3,000-note batches only for structural scoping.
+    if progress:
+        progress("Notetypes: resolving server note types in 3,000-note batches…")
+    out: set[int] = set()
+    guids = [str(note["guid"]) for note in notes if note.get("guid")]
+    for chunk in _chunks(guids):
+        for note in client.batch_pull(notes=chunk).get("notes", []):
+            if note.get("notetype_id") is not None:
+                out.add(int(note["notetype_id"]))
+    return out
+
+
+def _safe_fresh_or_interrupted_restore(
+    local_notes: list[dict[str, Any]],
+    local_cards: list[dict[str, Any]],
+    server_manifest: dict[str, Any],
+) -> bool:
+    """True when local content is empty or an untouched partial server pull.
+
+    A failed first restore may have already pulled notes, which generates new
+    cards in Anki's Default deck before canonical card records are applied. We
+    can resume server-authoritatively only when every local note matches a
+    server checksum, every card identity exists on the server, and every card
+    is still pristine/unreviewed. Any local-only note, field edit, or review
+    disables this shortcut and falls back to normal conflict protection.
+    """
+    if not local_notes and not local_cards:
+        return True
+    server_notes = {
+        str(item.get("guid", "")): str(item.get("checksum", ""))
+        for item in server_manifest.get("notes", [])
+    }
+    if any(
+        server_notes.get(str(note.get("guid", "")))
+        != str(note.get("checksum", ""))
+        for note in local_notes
+    ):
+        return False
+    server_cards = {
+        str(
+            item.get("logical_key")
+            or f"{item.get('note_guid', '')}:{int(item.get('ord', 0) or 0)}"
+        )
+        for item in server_manifest.get("cards", [])
+    }
+    if any(str(card.get("logical_key", "")) not in server_cards for card in local_cards):
+        return False
+    return all(
+        int((card.get("scheduling") or {}).get(field, 0) or 0) == 0
+        for card in local_cards
+        for field in ("type", "queue", "ivl", "reps", "lapses")
+    )
+
+
 def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], deck_names: list[str] | None, progress=None) -> dict[str, Any]:
     """Filter server manifest to the deck picker scope.
 
@@ -244,23 +308,67 @@ def sync_content_once(
     if progress:
         progress(f"Snapshot: {len(local_card_manifest)} local cards")
     used_notetype_ids = {int(n["notetype_id"]) for n in local_note_manifest}
-    local_notetype_manifest = anki_local.notetype_manifest(col, notetype_ids=used_notetype_ids if deck_names is not None else None)
+    server_used_notetype_ids = _server_used_notetype_ids(
+        client, manifest, progress=progress
+    )
+    # Include only types used by local or server notes. This excludes unrelated
+    # stock scaffolding and unused server types that do not round-trip through
+    # Anki until content actually references them.
+    compared_notetype_ids = used_notetype_ids | server_used_notetype_ids
+    local_notetype_manifest = anki_local.notetype_manifest(
+        col, notetype_ids=compared_notetype_ids
+    )
     if progress:
         progress(f"Snapshot: {len(local_notetype_manifest)} local notetypes")
     local_deck_manifest = anki_local.deck_manifest(col, deck_names=deck_names)
     if progress:
         progress(f"Snapshot: {len(local_deck_manifest)} local decks")
+    # Deletion detection must consider all locally existing notetypes, even
+    # unused ones. Publishing/comparison above remains scoped to used types so
+    # stock scaffolding is never uploaded.
+    all_local_notetype_ids = {
+        str(item["notetype_id"]) for item in anki_local.notetype_manifest(col)
+    }
     local_keys = {
         "notes": {x["guid"] for x in local_note_manifest},
         "cards": {str(x["card_id"]) for x in local_card_manifest},
-        "notetypes": {str(x["notetype_id"]) for x in local_notetype_manifest},
+        "notetypes": all_local_notetype_ids,
         "decks": {x["name"] for x in local_deck_manifest},
     }
+    snapshot_is_empty = not any(
+        snapshot.get(kind) for kind in ("notes", "cards", "notetypes", "decks")
+    )
+    fresh_restore = bool(
+        deck_names is None
+        and snapshot_is_empty
+        and (manifest.get("notes") or manifest.get("cards"))
+        and _safe_fresh_or_interrupted_restore(
+            local_note_manifest, local_card_manifest, manifest
+        )
+    )
+    if fresh_restore and progress:
+        progress(
+            "Fresh KelmaDesktop collection detected: restoring the server copy "
+            "without treating unused stock structure as local edits"
+        )
     if progress:
         progress("Phase 5/9: detecting local deletes…")
     local_deletes = (
         sync_state.compute_local_deletes(snapshot, local_keys) if scope_matches else {}
     )
+    # Never echo an incoming server deletion back as a newly detected local
+    # deletion. A note tombstone also removes its generated local cards.
+    applied_by_server = {
+        "notes": tombstones.applied_resources.get("note", set()),
+        "cards": tombstones.applied_resources.get("card", set()),
+        "notetypes": tombstones.applied_resources.get("notetype", set()),
+        "decks": tombstones.applied_resources.get("deck", set()),
+    }
+    local_deletes = {
+        resource: sorted(set(values) - applied_by_server.get(resource, set()))
+        for resource, values in local_deletes.items()
+        if set(values) - applied_by_server.get(resource, set())
+    }
     local_deletes = _limit_deletes_to_scoped_server(local_deletes, manifest)
     delete_total = sum(len(values) for values in local_deletes.values())
     content_deletes = len(local_deletes.get("notes", [])) + len(local_deletes.get("cards", []))
@@ -285,13 +393,28 @@ def sync_content_once(
     try:
         if progress:
             progress("Phase 6/9: syncing decks…")
-        result.decks = sync_decks_once(col, client, manifest, progress=progress, deck_names=deck_names)
+        result.decks = sync_decks_once(
+            col,
+            client,
+            manifest,
+            progress=progress,
+            deck_names=deck_names,
+            prefer_server=fresh_restore,
+        )
     except DeckSyncConflict as e:
         raise ContentSyncConflict("deck", e.conflicts) from e
     try:
         if progress:
             progress("Phase 7/9: syncing notetypes…")
-        result.notetypes = sync_notetypes_once(col, client, manifest, apply_pulls=True, progress=progress, notetype_ids=used_notetype_ids if deck_names is not None else None)
+        result.notetypes = sync_notetypes_once(
+            col,
+            client,
+            manifest,
+            apply_pulls=True,
+            progress=progress,
+            notetype_ids=compared_notetype_ids,
+            prefer_server=fresh_restore,
+        )
     except NotetypeSyncConflict as e:
         raise ContentSyncConflict("notetype", e.conflicts) from e
     try:
@@ -312,7 +435,14 @@ def sync_content_once(
     if progress:
         progress("Phase 9/9: syncing cards…")
     try:
-        result.cards = sync_cards_once(col, client, manifest, progress=progress, deck_names=deck_names)
+        result.cards = sync_cards_once(
+            col,
+            client,
+            manifest,
+            progress=progress,
+            deck_names=deck_names,
+            prefer_server=fresh_restore,
+        )
     except CardSyncConflict as e:
         raise ContentSyncConflict("card", e.conflicts) from e
     if progress:
@@ -326,14 +456,44 @@ def sync_content_once(
     )
     result.server_time = result.notes.server_time or manifest.get("server_time", "")
 
-    # Save the new snapshot so next sync can detect deletes.
+    # Save the post-sync collection, not the pre-pull keys. This is essential on
+    # a fresh restore: otherwise the next sync sees every restored row as new
+    # and the deletion baseline remains empty.
+    if progress:
+        progress("Refreshing post-sync snapshot…")
+    final_notes = anki_local.note_manifest(
+        col, deck_names=deck_names, progress=progress
+    )
+    final_cards = anki_local.card_manifest(col, deck_names=deck_names)
+    final_notetype_ids = {int(note["notetype_id"]) for note in final_notes}
+    final_notetypes = anki_local.notetype_manifest(
+        col, notetype_ids=final_notetype_ids
+    )
+    all_final_notetype_ids = {
+        str(item["notetype_id"]) for item in anki_local.notetype_manifest(col)
+    }
+    server_notetype_ids = {
+        str(item.get("notetype_id")) for item in manifest.get("notetypes", [])
+    }
+    final_decks = anki_local.deck_manifest(col, deck_names=deck_names)
+    final_keys = {
+        "notes": {str(item["guid"]) for item in final_notes},
+        "cards": {str(item["card_id"]) for item in final_cards},
+        # Track used/published types plus existing types known by this server;
+        # omit unrelated stock types so they can never become server deletes.
+        "notetypes": (
+            {str(item["notetype_id"]) for item in final_notetypes}
+            | (all_final_notetype_ids & server_notetype_ids)
+        ),
+        "decks": {str(item["name"]) for item in final_decks},
+    }
     if progress:
         progress("Saving sync snapshot…")
     new_state = sync_state.build_state(
-        notes=sorted(local_keys["notes"]),
-        cards=sorted(local_keys["cards"]),
-        notetypes=sorted(local_keys["notetypes"]),
-        decks=sorted(local_keys["decks"]),
+        notes=sorted(final_keys["notes"]),
+        cards=sorted(final_keys["cards"]),
+        notetypes=sorted(final_keys["notetypes"]),
+        decks=sorted(final_keys["decks"]),
         scope=current_scope,
     )
     sync_state.save_state(col, new_state)

@@ -36,13 +36,18 @@ def sync_notetypes_once(
     apply_pulls: bool = True,
     progress=None,
     notetype_ids: set[int] | None = None,
+    prefer_server: bool = False,
 ) -> NotetypeSyncResult:
     if progress:
         progress("Notetypes: building local notetype manifest…")
     local = {str(x["notetype_id"]): x for x in anki_local.notetype_manifest(col, notetype_ids=notetype_ids)}
     if server_manifest is None:
         server_manifest = client.manifest()
-    server = {str(x["notetype_id"]): x for x in server_manifest.get("notetypes", [])}
+    server = {
+        str(x["notetype_id"]): x
+        for x in server_manifest.get("notetypes", [])
+        if notetype_ids is None or int(x["notetype_id"]) in notetype_ids
+    }
     result = NotetypeSyncResult()
 
     keys = sorted(set(local) | set(server))
@@ -55,6 +60,18 @@ def sync_notetypes_once(
         l = local.get(key)
         s = server.get(key)
         ntid = int(key)
+        if prefer_server:
+            # A fresh Anki collection ships unused stock notetypes. They are
+            # scaffolding, not local edits: restore every server notetype and
+            # leave local-only stock definitions unpublished.
+            if s and l and l.get("checksum") == s.get("checksum"):
+                result.skipped += 1
+            elif s and apply_pulls:
+                anki_apply.apply_server_notetype(col, client, ntid)
+                result.pulled += 1
+            else:
+                result.skipped += 1
+            continue
         if l and s and l.get("checksum") == s.get("checksum"):
             result.skipped += 1
             continue

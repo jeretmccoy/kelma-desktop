@@ -372,7 +372,8 @@ def local_manifest(col: Collection, deck_name: str | None = None, deck_names: li
     cards = card_manifest(col, deck_names=deck_names)
     if progress:
         progress(f"Read {len(cards)} cards · reading notetypes…")
-    notetypes = notetype_manifest(col, notetype_ids=used_notetypes if deck_names is not None else None)
+    # Unused stock notetypes in a fresh collection are not user content.
+    notetypes = notetype_manifest(col, notetype_ids=used_notetypes)
     if progress:
         progress(f"Read {len(notetypes)} notetypes · reading decks…")
     decks = deck_manifest(col, deck_names=deck_names)

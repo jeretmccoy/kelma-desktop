@@ -10,7 +10,7 @@ from anki.collection import Collection
 from .client import V2Client
 from . import anki_apply, anki_local
 
-_BATCH_SIZE = 1000
+_BATCH_SIZE = 3000
 
 
 @dataclass
@@ -40,7 +40,14 @@ def _parse_ts(value) -> float:
         return 0.0
 
 
-def sync_cards_once(col: Collection, client: V2Client, server_manifest: dict | None = None, progress=None, deck_names: list[str] | None = None) -> CardSyncResult:
+def sync_cards_once(
+    col: Collection,
+    client: V2Client,
+    server_manifest: dict | None = None,
+    progress=None,
+    deck_names: list[str] | None = None,
+    prefer_server: bool = False,
+) -> CardSyncResult:
     if progress:
         progress("Cards: building local card manifest…")
     local = {_logical_key(x): x for x in anki_local.card_manifest(col, deck_names=deck_names)}
@@ -59,6 +66,16 @@ def sync_cards_once(col: Collection, client: V2Client, server_manifest: dict | N
             progress(f"Cards plan {idx}/{total} · to push {len(local_only)}, to pull {len(server_pull_ids)}, in sync {result.skipped}, conflicts {len(result.conflicts)}")
         l = local.get(key)
         s = server.get(key)
+        if prefer_server:
+            # Pulling notes into a fresh collection generates local cards in the
+            # stock Default deck before card records are restored. They are not
+            # competing edits: apply the server card to set its real deck and
+            # scheduling, and ignore generated cards absent from the server.
+            if s:
+                server_pull_ids.append(int(s["card_id"]))
+            else:
+                result.skipped += 1
+            continue
         if l and s:
             if l.get("checksum") != s.get("checksum"):
                 # Structural change (deck move / ord change) — a real conflict.

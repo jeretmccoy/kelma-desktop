@@ -23,7 +23,14 @@ class DeckSyncConflict(RuntimeError):
         self.conflicts = conflicts
 
 
-def sync_decks_once(col: Collection, client: V2Client, server_manifest: dict[str, Any] | None = None, progress=None, deck_names: list[str] | None = None) -> DeckSyncResult:
+def sync_decks_once(
+    col: Collection,
+    client: V2Client,
+    server_manifest: dict[str, Any] | None = None,
+    progress=None,
+    deck_names: list[str] | None = None,
+    prefer_server: bool = False,
+) -> DeckSyncResult:
     if progress:
         progress("Decks: building local deck manifest…")
     local = {x["name"]: x for x in anki_local.deck_manifest(col, deck_names=deck_names)}
@@ -40,10 +47,28 @@ def sync_decks_once(col: Collection, client: V2Client, server_manifest: dict[str
             progress(f"Decks {idx}/{total} · pushed {result.pushed}, pulled {result.pulled}, skipped {result.skipped}, conflicts {len(result.conflicts)}")
         l = local.get(name)
         s = server.get(name)
+        if prefer_server:
+            # Fresh KelmaDesktop collections contain stock local structure but
+            # no user content. Restore server decks without presenting those
+            # unused defaults as competing edits, and never publish local-only
+            # stock decks during the first restore.
+            if s and l and l.get("checksum") == s.get("checksum"):
+                result.skipped += 1
+            elif s:
+                anki_apply.apply_server_deck(col, client, name)
+                result.pulled += 1
+            else:
+                result.skipped += 1
+            continue
         if l and s and l.get("checksum") == s.get("checksum"):
             result.skipped += 1
             continue
         if l and not s:
+            if name == "Default" and not _deck_has_cards(col, name):
+                # Anki creates this empty deck in every new collection. It is
+                # local scaffolding, not a user-created server deck.
+                result.skipped += 1
+                continue
             _push_deck(col, client, name, base_checksum="")
             result.pushed += 1
             continue
@@ -61,6 +86,20 @@ def sync_decks_once(col: Collection, client: V2Client, server_manifest: dict[str
     if progress:
         progress(f"Decks complete: pushed {result.pushed}, pulled {result.pulled}, skipped {result.skipped}")
     return result
+
+
+def _deck_has_cards(col: Collection, name: str) -> bool:
+    deck = col.decks.by_name(name)
+    if not deck:
+        return False
+    deck_id = int(deck["id"])
+    return bool(
+        col.db.scalar(
+            "select 1 from cards where did = ? or odid = ? limit 1",
+            deck_id,
+            deck_id,
+        )
+    )
 
 
 def _push_deck(col: Collection, client: V2Client, name: str, *, base_checksum: str, force: bool = False) -> dict[str, Any]:

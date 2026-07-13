@@ -167,38 +167,80 @@ def sync_media_once(
         if entry.get("filename") in ref_set
     ]
     total_downloads = len(server_entries)
-    for i, entry in enumerate(server_entries, 1):
-        if progress and (i == 1 or i == total_downloads or i % 1000 == 0):
-            progress(f"Media download check {i}/{total_downloads} · downloaded {result.downloaded}, skipped {result.skipped}")
+    if progress:
+        progress(
+            f"Media: checking/downloading {total_downloads} server files with 50 connections…"
+        )
+
+    def download_one(entry: dict) -> str:
         filename = entry.get("filename")
         if not filename:
-            result.skipped += 1
-            continue
-        path = _safe_media_path(media_dir, filename)
+            return "skipped"
+        path = _safe_media_path(media_dir, str(filename))
         # Ask the filesystem rather than comparing directory-entry strings.
-        # Default macOS volumes are case-insensitive, so server names such as
-        # But.mp3 and but.mp3 identify the same local file even though Python
-        # string comparison says otherwise.
+        # Default macOS volumes are case-insensitive, so case aliases identify
+        # the same local file even when Python strings differ.
         if path.exists() and path.is_file():
-            result.skipped += 1
-            continue
-        try:
-            path.write_bytes(client.get_media(filename))
-        except V2Error as err:
-            # The server lists the file but can't serve its bytes (e.g. a
-            # dev-server restart wiped a non-persistent blob store). Don't abort
-            # the whole sync: if we have the file locally, re-upload to heal the
-            # server; otherwise skip it.
-            if err.status == 404:
+            return "skipped"
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                data = client.get_media(str(filename))
+                # Another case-alias worker may have completed while this request
+                # was in flight.
                 if path.exists() and path.is_file():
-                    import mimetypes as _mt
-                    client.put_media(filename, path.read_bytes(), _mt.guess_type(filename)[0] or "application/octet-stream")
-                    result.uploaded += 1
+                    return "skipped"
+                import threading
+
+                temp = media_dir / (
+                    f".kelma-download-{abs(hash(str(filename)))}-"
+                    f"{threading.get_ident()}.tmp"
+                )
+                try:
+                    temp.write_bytes(data)
+                    temp.replace(path)
+                finally:
+                    temp.unlink(missing_ok=True)
+                return "downloaded"
+            except V2Error as err:
+                if err.status == 404:
+                    return "skipped"
+                last_error = err
+            except Exception as err:  # noqa: BLE001
+                last_error = err
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+        assert last_error is not None
+        raise last_error
+
+    download_iter = iter(server_entries)
+    checked = 0
+    with ThreadPoolExecutor(max_workers=50, thread_name_prefix="kelma-media") as pool:
+        pending = {
+            pool.submit(download_one, entry)
+            for entry in islice(download_iter, 50)
+        }
+        while pending:
+            completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                status = future.result()
+                checked += 1
+                if status == "downloaded":
+                    result.downloaded += 1
                 else:
                     result.skipped += 1
-                continue
-            raise
-        result.downloaded += 1
+                if progress and (
+                    checked == 1 or checked == total_downloads or checked % 1000 == 0
+                ):
+                    progress(
+                        f"Media download check {checked}/{total_downloads} · "
+                        f"downloaded {result.downloaded}, skipped {result.skipped}"
+                    )
+                try:
+                    entry = next(download_iter)
+                except StopIteration:
+                    continue
+                pending.add(pool.submit(download_one, entry))
 
     if progress:
         progress(f"Media complete: uploaded {result.uploaded}, downloaded {result.downloaded}, skipped {result.skipped}")
