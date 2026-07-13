@@ -6,9 +6,8 @@ from __future__ import annotations
 import difflib
 import json
 import re
-import shutil
 import sys
-import tempfile
+import threading
 import time
 from collections import Counter
 from concurrent.futures import Future
@@ -2116,6 +2115,8 @@ class V2NoteConflictDialog(QDialog):
 class V2FullDiffDialog(QDialog):
     """Source-selection UI for local/AnkiWeb vs KelmaSync differences."""
 
+    _progress_signal = pyqtSignal(str)
+
     def __init__(self, parent=None, *, reconcile_mode: bool = False, ankiweb_changes: int = 0, staged_mode: bool = False) -> None:
         super().__init__(parent)
         self._reconcile_mode = reconcile_mode
@@ -2180,13 +2181,152 @@ class V2FullDiffDialog(QDialog):
         layout.addWidget(buttons)
 
         self._diff = None
+        self._progress_signal.connect(self._on_progress)
         self._load()
 
     def _on_progress(self, text: str) -> None:
         self.status_label.setText(text)
-        QApplication.processEvents()
 
     def _load(self) -> None:
+        """Start comparison without blocking/re-entering Qt's UI thread."""
+        global _V2_ACTIVE_ACTION
+        blocked = _v2_active_message()
+        if blocked:
+            self._on_progress(f"⚠ {blocked}")
+            self.btn_accept_all.setEnabled(False)
+            self.btn_force_all.setEnabled(False)
+            return
+        try:
+            self._on_progress("Connecting…")
+            client = _v2_client_or_login()
+        except Exception as err:  # noqa: BLE001
+            self._on_progress(f"⚠ Login error: {err}")
+            return
+        if client is None:
+            self._on_progress("Not logged in. Open the sync menu → Settings to log in.")
+            return
+        try:
+            deck_names = _v2_kelma_deck_names()
+        except Exception as err:  # noqa: BLE001
+            self._on_progress(f"⚠ Could not determine deck scope: {err}")
+            return
+        if not deck_names and deck_names is not None:
+            self._on_progress(
+                "No decks are picked for KelmaSync. Open Settings → deck routing "
+                "and tick KelmaSync for at least one deck."
+            )
+            return
+
+        self._client = client
+        _V2_ACTIVE_ACTION = "compare"
+        self.btn_accept_all.setEnabled(False)
+        self.btn_force_all.setEnabled(False)
+        self.continue_button.setEnabled(False)
+        self._on_progress(
+            "Scope: all decks (KelmaDesktop)"
+            if deck_names is None
+            else f"Scope: {len(deck_names)} KelmaSync deck(s)"
+        )
+
+        def progress(text: str) -> None:
+            self._progress_signal.emit(text)
+
+        def work():
+            import time as _t
+            from types import SimpleNamespace
+            from kelma_sync_v2 import anki_local
+            from kelma_sync_v2.content_sync import _scope_server_manifest_to_decks
+            from kelma_sync_v2.full_diff import _diff_keyed
+
+            progress("Contacting server…")
+            t0 = _t.time()
+            server = client.manifest()
+            server = _scope_server_manifest_to_decks(
+                client, server, deck_names, progress=progress
+            )
+            progress(
+                f"Server: {len(server.get('notes', []))} notes, "
+                f"{len(server.get('cards', []))} cards, "
+                f"{len(server.get('notetypes', []))} notetypes, "
+                f"{len(server.get('decks', []))} decks ({_t.time()-t0:.1f}s)"
+            )
+            local = anki_local.local_manifest(
+                mw.col, deck_names=deck_names, progress=progress
+            )
+            progress("Comparing notes…")
+            notes = _diff_keyed(
+                local.get("notes", []), server.get("notes", []), "guid"
+            )
+            progress("Comparing cards…")
+            cards = _diff_keyed(
+                local.get("cards", []), server.get("cards", []), "logical_key"
+            )
+            progress("Comparing notetypes…")
+            notetypes = _diff_keyed(
+                local.get("notetypes", []),
+                server.get("notetypes", []),
+                "notetype_id",
+            )
+            progress("Comparing decks…")
+            decks = _diff_keyed(
+                local.get("decks", []), server.get("decks", []), "name"
+            )
+            first_changed = 0
+            for idx, entries in enumerate((notes, notetypes, decks, cards)):
+                if any(entry.status != "in-sync" for entry in entries):
+                    first_changed = idx
+                    break
+            total_changed = sum(
+                1
+                for entries in (notes, notetypes, decks, cards)
+                for entry in entries
+                if entry.status != "in-sync"
+            )
+            return SimpleNamespace(
+                notes=notes,
+                cards=cards,
+                notetypes=notetypes,
+                decks=decks,
+                server_time=server.get("server_time", ""),
+                first_changed=first_changed,
+                total_changed=total_changed,
+            )
+
+        def done(future: Future) -> None:
+            global _V2_ACTIVE_ACTION
+            if _V2_ACTIVE_ACTION == "compare":
+                _V2_ACTIVE_ACTION = None
+            try:
+                self.btn_accept_all.setEnabled(True)
+                self.btn_force_all.setEnabled(True)
+                self.continue_button.setEnabled(True)
+            except RuntimeError:
+                # The user closed the dialog while its worker was finishing.
+                return
+            try:
+                loaded = future.result()
+            except Exception as err:  # noqa: BLE001
+                self._on_progress(f"⚠ Compare failed: {err}")
+                tooltip(f"KelmaSync compare failed: {err}")
+                return
+            self._diff = loaded
+            self.resource_combo.setCurrentIndex(loaded.first_changed)
+            if loaded.total_changed == 0:
+                try:
+                    _mark_service_synced_for_badges(consts.KELMA)
+                    self._on_progress("Everything matches KelmaSync — badges reset.")
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                self._on_progress("Building table…")
+            try:
+                self._populate()
+            except Exception as err:  # noqa: BLE001
+                self._on_progress(f"⚠ Failed to render: {err}")
+
+        mw.taskman.run_in_background(work, done, uses_collection=True)
+
+    def _load_legacy(self) -> None:
         # Hard guard: a sync task owns Anki's collection queue. If Compare starts
         # while sync is running, do NOT queue behind it and look hung.
         global _V2_ACTIVE_ACTION
@@ -2745,6 +2885,7 @@ def _mark_service_synced_for_badges(service: str) -> None:
     path = config.get().get("v2_url", "") if service == consts.KELMA else "AnkiWeb"
     state.mark_synced(st, service, path, mw.col)
     state.save(st)
+    deckbadges.invalidate_sizes()
     # Always refresh — the deck browser may not be the current state during a
     # sync (a progress dialog is showing), but when the user returns to it,
     # the cached render would still show stale +N badges.
@@ -3096,17 +3237,20 @@ def _v2_old_staged_menu() -> None:
 class V2JointStateDialog(QDialog):
     """One workspace for fetching, choosing, and publishing all sync sources."""
 
+    _status_signal = pyqtSignal(str)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("KelmaSync · Review changes")
         self.resize(1180, 760)
         self._client = _v2_client_or_login()
-        self._temp_dir: str | None = None
         self._remote_col = None
+        self._fetching = False
         self._sources: dict[str, dict[str, dict]] = {}
         self._rows: list[tuple[str, str]] = []
         self._row_values: list[dict[str, dict | None]] = []
         self._choices: list[QComboBox] = []
+        self._selected_sources: list[str | None] = []
         self._conflict_indices: list[int] = []
         self._kelma_changes: list[dict] = []
         self._ankiweb_changes: list[dict] = []
@@ -3171,10 +3315,11 @@ class V2JointStateDialog(QDialog):
         actions.addWidget(self.apply_btn)
         actions.addWidget(self.publish_btn)
         actions.addStretch()
-        close = QPushButton("Close")
-        close.clicked.connect(self.reject)
-        actions.addWidget(close)
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.reject)
+        actions.addWidget(self.close_btn)
         layout.addLayout(actions)
+        self._status_signal.connect(self.status.setText)
 
         if self._client is None or (not self._deck_names and self._deck_names is not None):
             self.status.setText("Sign in and choose at least one KelmaSync deck before reviewing changes.")
@@ -3183,14 +3328,18 @@ class V2JointStateDialog(QDialog):
             self._fetch()
 
     def reject(self) -> None:
+        if self._fetching:
+            self.status.setText(
+                "The independent AnkiWeb copy is still downloading. Its progress "
+                "is shown above; this computer's collection is not being changed."
+            )
+            return
         if self._remote_col is not None:
             try:
                 self._remote_col.close()
             except Exception:  # noqa: BLE001
                 pass
             self._remote_col = None
-        if self._temp_dir:
-            shutil.rmtree(self._temp_dir, ignore_errors=True)
         super().reject()
 
     @staticmethod
@@ -3225,11 +3374,15 @@ class V2JointStateDialog(QDialog):
 
     def _fetch(self) -> None:
         self.apply_btn.setEnabled(False)
+        self.close_btn.setEnabled(False)
+        self._fetching = True
         self.status.setText("Checking AnkiWeb without changing this computer…")
         client = self._client
         deck_names = self._deck_names
         auth = mw.pm.sync_auth()
         if not auth:
+            self._fetching = False
+            self.close_btn.setEnabled(True)
             self.status.setText("Sign in to AnkiWeb before reviewing all three copies.")
             return
 
@@ -3238,47 +3391,120 @@ class V2JointStateDialog(QDialog):
             from kelma_sync_v2 import anki_local
             from kelma_sync_v2.content_sync import _scope_server_manifest_to_decks
 
-            temp_dir = tempfile.mkdtemp(prefix="kelma-joint-state-")
-            temp_path = str(Path(temp_dir) / "collection.anki2")
-            remote = Collection(temp_path)
-            remote_auth = type(auth)()
-            remote_auth.CopyFrom(auth)
-            handshake = remote.sync_collection(remote_auth, False)
-            if handshake.new_endpoint:
-                remote_auth.endpoint = handshake.new_endpoint
-            remote.close_for_full_sync()
-            remote.full_upload_or_download(
-                auth=remote_auth,
-                server_usn=handshake.server_media_usn,
-                upload=False,
+            # Keep an independent cache beside the main collection. It is never
+            # applied to mw.col. First use may require a full download; later
+            # comparisons use AnkiWeb's normal incremental sync against this cache.
+            cache_path = str(Path(mw.col.path).with_name("kelma_ankiweb_compare.anki2"))
+            remote = Collection(cache_path)
+            completed = False
+            stop_monitor = threading.Event()
+            started = time.monotonic()
+
+            def monitor() -> None:
+                while not stop_monitor.wait(0.25):
+                    elapsed = time.monotonic() - started
+                    try:
+                        current = remote.latest_progress()
+                        if current.HasField("full_sync"):
+                            value = current.full_sync
+                            if value.total:
+                                pct = min(100, int(value.transferred * 100 / value.total))
+                                text = (
+                                    "Downloading independent AnkiWeb copy… "
+                                    f"{pct}% ({value.transferred / (1024 * 1024):.1f} / "
+                                    f"{value.total / (1024 * 1024):.1f} MB)"
+                                )
+                            else:
+                                text = f"Downloading independent AnkiWeb copy… {elapsed:.0f}s"
+                        elif current.HasField("normal_sync"):
+                            stage = current.normal_sync.stage or "Checking changes"
+                            text = f"AnkiWeb cache: {stage}… {elapsed:.0f}s"
+                        else:
+                            text = f"Checking independent AnkiWeb copy… {elapsed:.0f}s"
+                    except Exception:  # noqa: BLE001
+                        text = f"Checking independent AnkiWeb copy… {elapsed:.0f}s"
+                    self._status_signal.emit(text)
+
+            monitor_thread = threading.Thread(
+                target=monitor, name="kelma-ankiweb-compare-progress", daemon=True
             )
-            remote.reopen(after_full_sync=True)
-            ankiweb = anki_local.local_manifest(remote, deck_names=deck_names)
-            local = anki_local.local_manifest(mw.col, deck_names=deck_names)
-            kelma = _scope_server_manifest_to_decks(client, client.manifest(), deck_names)
-            # Only compare notetypes used by scoped notes on local or AnkiWeb.
-            # Server note manifests don't carry notetype_id, so derive the
-            # comparison set from local + AnkiWeb and filter all three sides.
-            comparison_ntids = {
-                int(nt["notetype_id"])
-                for nt in local["notetypes"] + ankiweb["notetypes"]
-            }
-            local["notetypes"] = [nt for nt in local["notetypes"] if int(nt["notetype_id"]) in comparison_ntids]
-            ankiweb["notetypes"] = [nt for nt in ankiweb["notetypes"] if int(nt["notetype_id"]) in comparison_ntids]
-            kelma["notetypes"] = [nt for nt in kelma.get("notetypes", []) if int(nt.get("notetype_id", 0)) in comparison_ntids]
-            return temp_dir, remote, local, ankiweb, kelma
+            monitor_thread.start()
+            try:
+                remote_auth = type(auth)()
+                remote_auth.CopyFrom(auth)
+                handshake = remote.sync_collection(remote_auth, False)
+                if handshake.new_endpoint:
+                    remote_auth.endpoint = handshake.new_endpoint
+                if handshake.required != handshake.NO_CHANGES:
+                    self._status_signal.emit(
+                        "AnkiWeb requires an independent full download; this computer's "
+                        "collection remains untouched."
+                    )
+                    remote.close_for_full_sync()
+                    remote.full_upload_or_download(
+                        auth=remote_auth,
+                        server_usn=handshake.server_media_usn,
+                        upload=False,
+                    )
+                    remote.reopen(after_full_sync=True)
+                self._status_signal.emit("Reading independent AnkiWeb snapshot…")
+                ankiweb = anki_local.local_manifest(remote, deck_names=deck_names)
+                local = anki_local.local_manifest(mw.col, deck_names=deck_names)
+                self._status_signal.emit("Fetching KelmaSync snapshot…")
+                kelma = _scope_server_manifest_to_decks(
+                    client, client.manifest(), deck_names
+                )
+                comparison_ntids = {
+                    int(nt["notetype_id"])
+                    for nt in local["notetypes"] + ankiweb["notetypes"]
+                }
+                local["notetypes"] = [
+                    nt
+                    for nt in local["notetypes"]
+                    if int(nt["notetype_id"]) in comparison_ntids
+                ]
+                ankiweb["notetypes"] = [
+                    nt
+                    for nt in ankiweb["notetypes"]
+                    if int(nt["notetype_id"]) in comparison_ntids
+                ]
+                kelma["notetypes"] = [
+                    nt
+                    for nt in kelma.get("notetypes", [])
+                    if int(nt.get("notetype_id", 0)) in comparison_ntids
+                ]
+                completed = True
+                return remote, local, ankiweb, kelma
+            finally:
+                stop_monitor.set()
+                monitor_thread.join(timeout=1)
+                if not completed:
+                    try:
+                        remote.close()
+                    except Exception:  # noqa: BLE001
+                        pass
 
         def done(future: Future) -> None:
+            self._fetching = False
             try:
-                self._temp_dir, self._remote_col, local, ankiweb, kelma = future.result()
+                self.close_btn.setEnabled(True)
+            except RuntimeError:
+                return
+            try:
+                self._remote_col, local, ankiweb, kelma = future.result()
             except Exception as err:  # noqa: BLE001
                 self.status.setText(f"Could not compare the three copies: {err}")
                 return
             for resource in ("notes", "cards", "notetypes", "decks"):
                 self._sources[resource] = {}
-                for name, manifest in (("Client", local), ("AnkiWeb", ankiweb), ("KelmaSync", kelma)):
+                for name, manifest in (
+                    ("Client", local),
+                    ("AnkiWeb", ankiweb),
+                    ("KelmaSync", kelma),
+                ):
                     self._sources[resource][name] = {
-                        self._key(resource, item): item for item in manifest.get(resource, [])
+                        self._key(resource, item): item
+                        for item in manifest.get(resource, [])
                     }
             self._populate()
 
@@ -3451,6 +3677,7 @@ class V2JointStateDialog(QDialog):
         self._rows.clear()
         self._row_values.clear()
         self._choices.clear()
+        self._selected_sources.clear()
         self._conflict_indices.clear()
         self._load_note_previews()
         rows = []
@@ -3467,56 +3694,96 @@ class V2JointStateDialog(QDialog):
                     counts["conflicts" if suggested is None else "newest"] += 1
         # Put choices that need attention first; safe newest-wins rows follow.
         rows.sort(key=lambda row: (row[3] is not None, row[0], row[1]))
-        self.table.setRowCount(len(rows))
-        for row, (resource, key, values, suggested, reason) in enumerate(rows):
+        for row, (resource, key, values, suggested, _reason) in enumerate(rows):
             self._rows.append((resource, key))
             self._row_values.append(values)
+            self._selected_sources.append(suggested)
             if suggested is None:
                 self._conflict_indices.append(row)
-            item_cell = QTableWidgetItem(self._item_label(resource, key, values))
-            explanation = self._difference_text(resource, values) + "\n\n" + reason
-            difference_cell = QTableWidgetItem(explanation)
-            self.table.setItem(row, 0, item_cell)
-            self.table.setItem(row, 1, difference_cell)
-            choice = QComboBox()
-            if suggested is None:
-                choice.addItem("Choose a version…", None)
-            for source in ("Client", "AnkiWeb", "KelmaSync"):
-                if values[source] is None:
-                    label = f"Remove this item (match {self._source_label(source)})"
-                else:
-                    label = {
-                        "Client": "Keep this computer's version",
-                        "AnkiWeb": "Keep AnkiWeb's version",
-                        "KelmaSync": "Keep KelmaSync's version",
-                    }[source]
-                if source == suggested:
-                    label += " — newest"
-                choice.addItem(label, source)
-            choice.setCurrentIndex(choice.findData(suggested))
-            choice.currentIndexChanged.connect(self._update_apply_state)
-            self.table.setCellWidget(row, 2, choice)
-            self._choices.append(choice)
-            details = QPushButton("Details…")
-            details.clicked.connect(
-                lambda _=False, r=resource, k=key, v=values: self._show_details(r, k, v)
-            )
-            self.table.setCellWidget(row, 3, details)
-            self.table.resizeRowToContents(row)
+
+        # Creating a combo box + button for tens of thousands of differences
+        # exhausts Qt and makes a fresh install look crashed. Keep every choice
+        # in the model above, but render only a bounded attention-first window.
+        cap = 500
+        shown = rows[:cap]
+        self.table.setUpdatesEnabled(False)
+        self.table.setRowCount(len(shown))
+        try:
+            for row, (resource, key, values, suggested, reason) in enumerate(shown):
+                item_cell = QTableWidgetItem(self._item_label(resource, key, values))
+                explanation = self._difference_text(resource, values) + "\n\n" + reason
+                difference_cell = QTableWidgetItem(explanation)
+                self.table.setItem(row, 0, item_cell)
+                self.table.setItem(row, 1, difference_cell)
+                choice = QComboBox()
+                if suggested is None:
+                    choice.addItem("Choose a version…", None)
+                for source in ("Client", "AnkiWeb", "KelmaSync"):
+                    if values[source] is None:
+                        label = (
+                            f"Remove this item (match {self._source_label(source)})"
+                        )
+                    else:
+                        label = {
+                            "Client": "Keep this computer's version",
+                            "AnkiWeb": "Keep AnkiWeb's version",
+                            "KelmaSync": "Keep KelmaSync's version",
+                        }[source]
+                    if source == suggested:
+                        label += " — newest"
+                    choice.addItem(label, source)
+                choice.setCurrentIndex(choice.findData(suggested))
+                choice.currentIndexChanged.connect(
+                    lambda _index, r=row, widget=choice: self._set_choice(
+                        r, widget.currentData()
+                    )
+                )
+                self.table.setCellWidget(row, 2, choice)
+                self._choices.append(choice)
+                details = QPushButton("Details…")
+                details.clicked.connect(
+                    lambda _=False, r=resource, k=key, v=values: self._show_details(
+                        r, k, v
+                    )
+                )
+                self.table.setCellWidget(row, 3, details)
+                self.table.resizeRowToContents(row)
+        finally:
+            self.table.setUpdatesEnabled(True)
         self.batch_box.setVisible(bool(self._conflict_indices))
         if rows:
-            summary = ", ".join(f"{count} {resource}" for resource, count in counts.items() if resource in ("notes", "cards", "notetypes", "decks"))
+            summary = ", ".join(
+                f"{count} {resource}"
+                for resource, count in counts.items()
+                if resource in ("notes", "cards", "notetypes", "decks")
+            )
             conflict_text = (
-                f"{counts['conflicts']} conflict(s) need your choice. " if counts["conflicts"] else ""
+                f"{counts['conflicts']} conflict(s) need your choice. "
+                if counts["conflicts"]
+                else ""
+            )
+            shown_text = (
+                f" Showing the first {len(shown):,}; batch choices apply to all."
+                if len(rows) > cap
+                else ""
             )
             self.status.setText(
-                f"Found {len(rows)} difference(s): {summary}. "
-                f"{counts['newest']} newest version(s) were selected automatically. {conflict_text}"
+                f"Found {len(rows):,} difference(s): {summary}. "
+                f"{counts['newest']} newest version(s) were selected automatically. "
+                f"{conflict_text}{shown_text}"
             )
             self._update_apply_state()
         else:
-            self.status.setText("Everything matches across this computer, AnkiWeb, and KelmaSync. You are already up to date.")
+            self.status.setText(
+                "Everything matches across this computer, AnkiWeb, and KelmaSync. "
+                "You are already up to date."
+            )
             self.apply_btn.setEnabled(False)
+
+    def _set_choice(self, row: int, source: str | None) -> None:
+        if 0 <= row < len(self._selected_sources):
+            self._selected_sources[row] = source
+        self._update_apply_state()
 
     def _batch_choose(self, source: str) -> None:
         changed = 0
@@ -3544,18 +3811,18 @@ class V2JointStateDialog(QDialog):
                 # an explicit per-row choice so one click cannot erase data.
                 skipped += 1
                 continue
-            index = self._choices[row].findData(selected)
-            if index >= 0:
-                self._choices[row].setCurrentIndex(index)
-                changed += 1
-            else:
-                skipped += 1
+            self._selected_sources[row] = selected
+            if row < len(self._choices):
+                index = self._choices[row].findData(selected)
+                if index >= 0:
+                    self._choices[row].setCurrentIndex(index)
+            changed += 1
         self._update_apply_state()
         suffix = f" {skipped} skipped to avoid deletion or an ambiguous tie." if skipped else ""
         self.status.setText(f"Batch choice applied to {changed} conflict(s).{suffix}")
 
     def _update_apply_state(self, _index: int = -1) -> None:
-        unresolved = sum(choice.currentData() is None for choice in self._choices)
+        unresolved = sum(source is None for source in self._selected_sources)
         self.apply_btn.setEnabled(bool(self._choices) and unresolved == 0)
         if unresolved:
             self.apply_btn.setText(f"Choose {unresolved} conflict(s) to continue")
@@ -3566,7 +3833,7 @@ class V2JointStateDialog(QDialog):
         _mark_service_synced_for_badges(service)
 
     def _apply(self) -> None:
-        selected = [choice.currentData() for choice in self._choices]
+        selected = list(self._selected_sources)
         if any(source is None for source in selected):
             self.status.setText("Choose a version for every conflict before applying.")
             self._update_apply_state()

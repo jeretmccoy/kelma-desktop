@@ -139,7 +139,11 @@ def _dir_size(path: str) -> int:
     return total
 
 
-def _compute_size(shadow_path: str) -> int:
+def _compute_size(shadow_path: str, fallback_col_path: str = "") -> int:
+    # v2 has no shadow collection: measure the real collection + media instead
+    # of reporting a permanent 0.00 GB from a file that never exists.
+    if not os.path.exists(shadow_path) and fallback_col_path:
+        shadow_path = fallback_col_path
     total = 0
     try:
         total += os.path.getsize(shadow_path)
@@ -170,10 +174,11 @@ def _ensure_size(service: str) -> None:
         return
     _size_running.add(service)
     shadow_path = paths.shadow_path(service)  # resolve on the main thread
+    col_path = str(getattr(mw.col, "path", "") or "")
 
     def run() -> None:
         try:
-            size = _compute_size(shadow_path)
+            size = _compute_size(shadow_path, col_path)
             _size_cache[service] = (time.time(), size)
             mw.taskman.run_on_main(_refresh_deck_list)
         finally:
