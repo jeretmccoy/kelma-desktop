@@ -89,7 +89,13 @@ def sync_notetypes_once(
                 result.skipped += 1
             continue
         if l and s:
-            winner = newest_side(l, s) if newest_wins else None
+            winner = (
+                newest_side(
+                    l, s, utc_now=server_manifest.get("server_time")
+                )
+                if newest_wins
+                else None
+            )
             if winner == "server" and apply_pulls:
                 anki_apply.apply_server_notetype(col, client, ntid)
                 result.pulled += 1

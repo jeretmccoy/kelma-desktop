@@ -50,6 +50,16 @@ def _chunks(xs: list, n: int = 3000):
         yield xs[i:i + n]
 
 
+def _card_logical_key(item: dict[str, Any]) -> str:
+    key = str(item.get("logical_key") or "")
+    if key:
+        return key
+    guid = str(item.get("note_guid") or "")
+    if not guid:
+        return ""
+    return f"{guid}:{int(item.get('ord', 0) or 0)}"
+
+
 def _server_used_notetype_ids(
     client: V2Client, manifest: dict[str, Any], progress=None
 ) -> set[int]:
@@ -308,6 +318,23 @@ def sync_content_once(
     local_card_manifest = anki_local.card_manifest(col, deck_names=deck_names)
     if progress:
         progress(f"Snapshot: {len(local_card_manifest)} local cards")
+    # Remember which logical cards existed before any upstream notes or
+    # notetypes are applied. Anki generates cards for pulled notes with a fresh
+    # local mod timestamp; those generated cards are not local edits and the
+    # corresponding server records must remain authoritative this pass.
+    local_card_keys_before_pulls = {
+        key
+        for item in local_card_manifest
+        if (key := _card_logical_key(item))
+    }
+    server_card_keys = {
+        key
+        for item in manifest.get("cards", [])
+        if (key := _card_logical_key(item))
+    }
+    server_authoritative_card_keys = (
+        server_card_keys - local_card_keys_before_pulls
+    )
     used_notetype_ids = {int(n["notetype_id"]) for n in local_note_manifest}
     server_used_notetype_ids = _server_used_notetype_ids(
         client, manifest, progress=progress
@@ -447,6 +474,7 @@ def sync_content_once(
             deck_names=deck_names,
             prefer_server=fresh_restore,
             newest_wins=newest_wins,
+            server_authoritative_keys=server_authoritative_card_keys,
         )
     except CardSyncConflict as e:
         raise ContentSyncConflict("card", e.conflicts) from e

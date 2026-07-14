@@ -79,7 +79,13 @@ def sync_decks_once(
             result.pulled += 1
             continue
         if l and s:
-            winner = newest_side(l, s) if newest_wins else None
+            winner = (
+                newest_side(
+                    l, s, utc_now=server_manifest.get("server_time")
+                )
+                if newest_wins
+                else None
+            )
             if winner == "server":
                 anki_apply.apply_server_deck(col, client, name)
                 result.pulled += 1

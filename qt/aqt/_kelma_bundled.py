@@ -16,7 +16,7 @@ import os
 import shutil
 import tempfile
 
-BUNDLED_VERSION = "1.0.119"
+BUNDLED_VERSION = "1.0.120"
 ADDON = "kelma"
 IS_KELMA_DESKTOP = True
 _MARKER = ".kelma_bundled_version"

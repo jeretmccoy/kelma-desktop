@@ -102,7 +102,13 @@ def sync_notes_once(
                 result.skipped += 1
             continue
         if local and server:
-            winner = newest_side(local, server) if newest_wins else None
+            winner = (
+                newest_side(
+                    local, server, utc_now=server_manifest.get("server_time")
+                )
+                if newest_wins
+                else None
+            )
             if winner == "server":
                 if apply_pulls:
                     server_pulls.append(guid)

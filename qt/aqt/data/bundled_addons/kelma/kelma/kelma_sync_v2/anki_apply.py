@@ -15,7 +15,14 @@ from .conflict_policy import modified_timestamp
 
 
 def _source_modified_seconds(record: dict[str, Any]) -> int:
-    return int(modified_timestamp(record) or time.time())
+    source_time = modified_timestamp(record)
+    receipt_time = modified_timestamp({"modified_at": record.get("modified_at")})
+    # A source timestamp cannot legitimately be far later than the server time
+    # at which it was accepted. Keep legacy clock-skewed records from poisoning
+    # Anki's local mod column with a future value.
+    if receipt_time > 0 and source_time > receipt_time + 300:
+        source_time = receipt_time
+    return int(source_time or time.time())
 
 
 def apply_deck(col: Collection, record: dict[str, Any]) -> str:
