@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 
-BUNDLED_VERSION = "1.0.118"
+BUNDLED_VERSION = "1.0.119"
 ADDON = "kelma"
 IS_KELMA_DESKTOP = True
 _MARKER = ".kelma_bundled_version"
@@ -77,23 +78,56 @@ def sync_bundled_addon(mw) -> None:
             except OSError:
                 pass  # missing/unreadable marker -> (re)install
 
-        os.makedirs(dst, exist_ok=True)
-        # Copy code + default config, but never overwrite the user's meta.json.
-        for root, _dirs, files in os.walk(src):
-            rel = os.path.relpath(root, src)
-            target_root = dst if rel == "." else os.path.join(dst, rel)
-            os.makedirs(target_root, exist_ok=True)
-            for name in files:
-                if name == "meta.json":
-                    continue
-                shutil.copy2(os.path.join(root, name), os.path.join(target_root, name))
+        # Build a clean replacement beside the existing add-on. Packaged apps
+        # contain compiled .pyc files, and leaving older .py files in place makes
+        # Python load the stale source instead. A full replacement also removes
+        # modules deleted by newer bundles. Preserve only Anki's user metadata.
+        parent = os.path.dirname(dst)
+        os.makedirs(parent, exist_ok=True)
+        staging = tempfile.mkdtemp(prefix=f".{ADDON}-bundled-", dir=parent)
+        backup = f"{dst}.kelma-bundled-backup"
+        replaced = False
+        try:
+            for root, _dirs, files in os.walk(src):
+                rel = os.path.relpath(root, src)
+                target_root = staging if rel == "." else os.path.join(staging, rel)
+                os.makedirs(target_root, exist_ok=True)
+                for name in files:
+                    if name == "meta.json":
+                        continue
+                    shutil.copy2(
+                        os.path.join(root, name), os.path.join(target_root, name)
+                    )
 
-        # Always refresh the source bootstrap; it is app code, not user config.
-        with open(os.path.join(dst, "__init__.py"), "w", encoding="utf8") as f:
-            f.write(_ADDON_LOADER)
+            user_meta = os.path.join(dst, "meta.json")
+            if os.path.isfile(user_meta):
+                shutil.copy2(user_meta, os.path.join(staging, "meta.json"))
 
-        with open(marker, "w", encoding="utf8") as f:
-            f.write(BUNDLED_VERSION)
+            # Always refresh the source bootstrap; it is app code, not user config.
+            with open(os.path.join(staging, "__init__.py"), "w", encoding="utf8") as f:
+                f.write(_ADDON_LOADER)
+
+            with open(os.path.join(staging, _MARKER), "w", encoding="utf8") as f:
+                f.write(BUNDLED_VERSION)
+
+            if os.path.isdir(backup):
+                shutil.rmtree(backup)
+            if os.path.isdir(dst):
+                os.replace(dst, backup)
+                replaced = True
+            try:
+                os.replace(staging, dst)
+                staging = ""
+            except Exception:
+                if replaced and not os.path.exists(dst):
+                    os.replace(backup, dst)
+                raise
+
+            if replaced:
+                shutil.rmtree(backup, ignore_errors=True)
+        finally:
+            if staging:
+                shutil.rmtree(staging, ignore_errors=True)
     except Exception as err:  # noqa: BLE001 - never break startup
         # Do not leave a fresh Desktop install silently falling through to
         # Anki's native login again. Report the packaging/install failure while
