@@ -18,6 +18,15 @@ from . import consts
 ADDON = __name__.split(".")[0]
 
 
+def _running_in_kelma_desktop() -> bool:
+    """Detect Desktop at runtime without changing the shared profile config."""
+    try:
+        from aqt import _kelma_bundled
+    except (ImportError, AttributeError):
+        return False
+    return bool(getattr(_kelma_bundled, "IS_KELMA_DESKTOP", False))
+
+
 def get() -> dict[str, Any]:
     cfg = mw.addonManager.getConfig(ADDON) or {}
     cfg.setdefault("enabled", True)
@@ -35,7 +44,8 @@ def get() -> dict[str, Any]:
     cfg.setdefault("features", {})
     # KelmaSync-only mode: hide every AnkiWeb surface (account, sync options,
     # routing column). Off by default — the standalone plugin is dual-sync; the
-    # KelmaDesktop bundle turns this on so the app never references AnkiWeb.
+    # KelmaDesktop also enforces this at runtime so shared Anki settings cannot
+    # re-enable native sync inside the Desktop process.
     cfg.setdefault("kelmasync_only", False)
     # KelmaSync v2 experimental REST client config. Kept separate from v1 hkey
     # auth so the existing sync path remains untouched.
@@ -49,14 +59,22 @@ def get() -> dict[str, Any]:
     cfg.setdefault("v2_username", "")
     cfg.setdefault("v2_token", "")
     cfg.setdefault("v2_client_id", "")
-    cfg.setdefault("v2_client_label", "Anki plugin")
+    cfg.setdefault(
+        "v2_client_label",
+        "KelmaDesktop" if _running_in_kelma_desktop() else "Anki plugin",
+    )
     cfg.setdefault("v2_last_server_time", "")
     cfg.setdefault("v2_allow_large_deletes", False)
     return cfg
 
 
 def kelmasync_only() -> bool:
-    return bool(get().get("kelmasync_only", False))
+    # KelmaDesktop and regular Anki can share one profile/add-ons directory.
+    # Force Desktop-only routing in memory without persisting it into the
+    # standalone Anki plugin's configuration.
+    return _running_in_kelma_desktop() or bool(
+        get().get("kelmasync_only", False)
+    )
 
 
 def ui_services() -> tuple[str, ...]:
@@ -75,6 +93,8 @@ def set_value(key: str, value: Any) -> None:
 
 
 def has_credentials(service: str) -> bool:
+    if kelmasync_only() and service != consts.KELMA:
+        return False
     cfg = get()
     if service == consts.KELMA:
         # KelmaSync v2 stores a bearer token. The legacy host key may remain on

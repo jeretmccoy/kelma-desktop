@@ -336,13 +336,14 @@ def notetype_record(col: Collection, notetype_id: int) -> dict[str, Any] | None:
     if not nt:
         return None
     name = nt.get("name", str(notetype_id))
+    modified = int(nt.get("mod", 0) or 0)
     definition = _normalized_notetype_definition(nt)
     return {
         "notetype_id": int(notetype_id),
         "name": name,
         "definition": definition,
         "checksum": notetype_checksum(name, definition),
-        "client_modified_at": iso_from_anki_mod(int(definition.get("mod", 0) or 0)),
+        "client_modified_at": iso_from_anki_mod(modified),
     }
 
 

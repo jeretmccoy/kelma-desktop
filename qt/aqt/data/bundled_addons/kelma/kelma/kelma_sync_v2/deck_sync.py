@@ -6,6 +6,7 @@ from typing import Any
 from anki.collection import Collection
 
 from .client import V2Client, V2Conflict
+from .conflict_policy import newest_side
 from . import anki_apply, anki_local
 
 
@@ -30,6 +31,7 @@ def sync_decks_once(
     progress=None,
     deck_names: list[str] | None = None,
     prefer_server: bool = False,
+    newest_wins: bool = False,
 ) -> DeckSyncResult:
     if progress:
         progress("Decks: building local deck manifest…")
@@ -77,8 +79,25 @@ def sync_decks_once(
             result.pulled += 1
             continue
         if l and s:
-            # Same identity but different checksum: user must decide.
-            result.conflicts.append({"name": name, "server": s, "client": l})
+            winner = newest_side(l, s) if newest_wins else None
+            if winner == "server":
+                anki_apply.apply_server_deck(col, client, name)
+                result.pulled += 1
+            elif winner == "local":
+                try:
+                    _push_deck(
+                        col, client, name,
+                        base_checksum=str(s.get("checksum") or ""),
+                    )
+                    result.pushed += 1
+                except V2Conflict as conflict:
+                    result.conflicts.append({
+                        "name": name,
+                        "server": conflict.server or s,
+                        "client": conflict.client or l,
+                    })
+            else:
+                result.conflicts.append({"name": name, "server": s, "client": l})
     if result.conflicts:
         if progress:
             progress(f"Decks: {len(result.conflicts)} conflict(s)")

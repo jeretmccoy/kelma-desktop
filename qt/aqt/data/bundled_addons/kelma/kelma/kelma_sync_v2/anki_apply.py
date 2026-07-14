@@ -6,11 +6,16 @@ non-conflicting pull path.
 """
 from __future__ import annotations
 
-from datetime import datetime
 import time
 from typing import Any
 
 from anki.collection import Collection
+
+from .conflict_policy import modified_timestamp
+
+
+def _source_modified_seconds(record: dict[str, Any]) -> int:
+    return int(modified_timestamp(record) or time.time())
 
 
 def apply_deck(col: Collection, record: dict[str, Any]) -> str:
@@ -26,7 +31,10 @@ def apply_deck(col: Collection, record: dict[str, Any]) -> str:
     cfg.pop("name", None)
     deck.update(cfg)
     deck["name"] = name
-    col.decks.update_dict(deck)
+    deck["mod"] = _source_modified_seconds(record)
+    deck["usn"] = 0
+    # This legacy sync API is the one that preserves the supplied mtime/usn.
+    col.decks.update(deck, preserve_usn=True)
     return name
 
 
@@ -85,11 +93,7 @@ def apply_card(col: Collection, record: dict[str, Any]) -> int:
         "flags": int(sched.get("flags", 0) or 0),
         "data": sched.get("data", "") or "",
     }
-    modified_at = record.get("client_modified_at") or record.get("modified_at")
-    try:
-        mod = int(datetime.fromisoformat(str(modified_at).replace("Z", "+00:00")).timestamp())
-    except Exception:
-        mod = int(time.time())
+    mod = _source_modified_seconds(record)
     # Resolve the deck by name so pulled cards land in the correct deck,
     # not just wherever add_note placed them.
     deck_name = record.get("deck_name") or ""
@@ -134,16 +138,16 @@ def apply_notetype(col: Collection, record: dict[str, Any]) -> int:
     definition["id"] = ntid
     if "name" in record:
         definition["name"] = record["name"]
-    # rslib's schema11 deserialization (Rust) requires mod/usn. The normalized
-    # definition strips them for checksum stability; restore defaults here.
-    definition.setdefault("mod", int(time.time()))
-    definition.setdefault("usn", 0)
+    # Preserve the source timestamp so this pull does not look like a newer
+    # local edit during the next comparison.
+    definition["mod"] = _source_modified_seconds(record)
+    definition["usn"] = 0
     existing = col.models.get(ntid)
     if existing:
         existing.update(definition)
-        col.models.update(existing, skip_checks=True)
+        col.models.update(existing, preserve_usn=True, skip_checks=True)
     else:
-        col.models.update(definition, skip_checks=True)
+        col.models.update(definition, preserve_usn=True, skip_checks=True)
     return ntid
 
 
@@ -164,6 +168,7 @@ def apply_note(col: Collection, record: dict[str, Any], *, deck_name: str = "Def
     fields = list(record.get("fields") or [])
     tags = list(record.get("tags") or [])
     mid = int(record.get("notetype_id") or 0)
+    source_mod = _source_modified_seconds(record)
 
     row = col.db.first("SELECT id FROM notes WHERE guid = ?", guid)
     if row:
@@ -176,6 +181,7 @@ def apply_note(col: Collection, record: dict[str, Any], *, deck_name: str = "Def
         note.fields = padded
         note.tags = tags
         col.update_note(note)
+        col.db.execute("UPDATE notes SET mod=?, usn=0 WHERE id=?", source_mod, nid)
         return nid
 
     nt = col.models.get(mid) if mid else None
@@ -189,7 +195,9 @@ def apply_note(col: Collection, record: dict[str, Any], *, deck_name: str = "Def
     note.guid = guid
     did = _deck_id(col, deck_name)
     col.add_note(note, did)
-    return int(note.id)
+    nid = int(note.id)
+    col.db.execute("UPDATE notes SET mod=?, usn=0 WHERE id=?", source_mod, nid)
+    return nid
 
 
 def delete_note(col: Collection, guid: str) -> bool:

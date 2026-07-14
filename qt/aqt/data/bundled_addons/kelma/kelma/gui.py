@@ -1831,6 +1831,9 @@ def _sync_menu() -> None:
 
 def _wrapped_sync() -> None:
     cfg = config.get()
+    if config.kelmasync_only():
+        _v2_sync_menu()
+        return
     if not cfg["enabled"] or not cfg["wrap_sync_button"]:
         if _orig_sync:
             return _orig_sync()
@@ -1866,7 +1869,9 @@ def _install_native_sync_guard() -> None:
 
     def guarded(after_sync):
         cfg = config.get()
-        if cfg.get("enabled", True) and cfg.get("block_native_sync", True):
+        if config.kelmasync_only() or (
+            cfg.get("enabled", True) and cfg.get("block_native_sync", True)
+        ):
             after_sync()  # skip the native sync; let the flow continue
         else:
             _orig_collection_sync(after_sync)
@@ -1921,7 +1926,7 @@ class V2LoginDialog(QDialog):
         self._client = client
         self.auth_out = None
         self.username_value = ""
-        self.client_label = "KelmaDesktop" if cfg.get("kelmasync_only") else "Anki plugin"
+        self.client_label = "KelmaDesktop" if config.kelmasync_only() else "Anki plugin"
 
         self.setWindowTitle("Sign in to Kelma Desktop")
         self.setModal(True)
@@ -1938,11 +1943,13 @@ class V2LoginDialog(QDialog):
         title.setFont(font)
         layout.addWidget(title)
 
-        account_help = QLabel(
+        account_text = (
             'Use the same email and password as your '
-            '<a href="https://kelma.tech">Kelma Immersion account</a>. '
-            "This is not an AnkiWeb login."
+            '<a href="https://kelma.tech">Kelma Immersion account</a>.'
         )
+        if not config.kelmasync_only():
+            account_text += " This is separate from your AnkiWeb login."
+        account_help = QLabel(account_text)
         account_help.setOpenExternalLinks(True)
         account_help.setWordWrap(True)
         layout.addWidget(account_help)
@@ -2113,7 +2120,7 @@ class V2NoteConflictDialog(QDialog):
 
 
 class V2FullDiffDialog(QDialog):
-    """Source-selection UI for local/AnkiWeb vs KelmaSync differences."""
+    """Source-selection UI for local/remote sync differences."""
 
     _progress_signal = pyqtSignal(str)
 
@@ -2127,15 +2134,25 @@ class V2FullDiffDialog(QDialog):
 
         layout = QVBoxLayout(self)
         if reconcile_mode or staged_mode:
-            intro = QLabel(
-                ("Both sources have been pulled. Decide what the local client should contain. "
-                 "Use Anki / AnkiWeb keeps the current local version; Use KelmaSync applies the server version locally. "
-                 "Nothing is pushed until you use the separate push actions."
-                 if staged_mode else
-                 f"AnkiWeb check complete: {ankiweb_changes} scoped resource(s) changed locally. "
-                 "Review differences below. Select rows and choose which source should become canonical; "
-                 "then Continue to update KelmaSync and publish the result to AnkiWeb.")
-            )
+            if config.kelmasync_only():
+                intro_text = (
+                    "An ambiguous or concurrent difference needs your choice. "
+                    "Keep the local collection or the KelmaSync "
+                    "version; no other sync service is involved."
+                )
+            elif staged_mode:
+                intro_text = (
+                    "Both sources have been pulled. Decide what the local client should contain. "
+                    "Use Anki / AnkiWeb keeps the current local version; Use KelmaSync applies the server version locally. "
+                    "Nothing is pushed until you use the separate push actions."
+                )
+            else:
+                intro_text = (
+                    f"AnkiWeb check complete: {ankiweb_changes} scoped resource(s) changed locally. "
+                    "Review differences below. Select rows and choose which source should become canonical; "
+                    "then Continue to update KelmaSync and publish the result to AnkiWeb."
+                )
+            intro = QLabel(intro_text)
             intro.setWordWrap(True)
             layout.addWidget(intro)
         top_row = QHBoxLayout()
@@ -2176,7 +2193,9 @@ class V2FullDiffDialog(QDialog):
         if staged_mode:
             close_button.setText("Use this client state")
         elif reconcile_mode:
-            close_button.setText("Continue reconciliation")
+            close_button.setText(
+                "Finish review" if config.kelmasync_only() else "Continue reconciliation"
+            )
         buttons.rejected.connect(self.accept if (reconcile_mode or staged_mode) else self.reject)
         layout.addWidget(buttons)
 
@@ -2708,11 +2727,15 @@ def _v2_entry_detail_html(col, client, entry) -> str:
     kind = entry.resource
     title = f"{entry.status}: {entry.key}"
     local_name = "Local collection" if config.kelmasync_only() else "Anki / AnkiWeb"
+    publish_text = (
+        "The chosen result is kept between this computer and KelmaSync."
+        if config.kelmasync_only()
+        else "The reconciliation pass then publishes the chosen local result to both services."
+    )
     parts = [
         f"<h2>{_esc(title)}</h2>",
         f"<p><b>Choose the canonical source:</b> KelmaSync overwrites {local_name}; "
-        f"{local_name} overwrites KelmaSync. The reconciliation pass then publishes "
-        "the chosen local result to both services.</p>",
+        f"{local_name} overwrites KelmaSync. {publish_text}</p>",
     ]
 
     if kind == "guid":
@@ -2902,6 +2925,15 @@ def _v2_run_ankiweb_sync(progress=None, done=None) -> None:
     button behavior so it can show the login UI.
     """
     global _V2_ACTIVE_ACTION
+    if config.kelmasync_only():
+        if _V2_ACTIVE_ACTION in ("sync", "ankiweb"):
+            _V2_ACTIVE_ACTION = None
+        text = "Native cloud sync is disabled in KelmaDesktop."
+        if progress:
+            progress(text)
+        if done:
+            done(False, text)
+        return
     blocked = _v2_active_message()
     if blocked and _V2_ACTIVE_ACTION != "sync":
         tooltip(f"KelmaSync: {blocked}")
@@ -4112,14 +4144,14 @@ def _v2_delete_and_restore_from_server() -> None:
 
 
 def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
-    """Reconcile AnkiWeb → local ↔ KelmaSync → AnkiWeb.
+    """Reconcile the local collection with KelmaSync.
 
-    AnkiWeb must run first: changes it downloads become visible to the Kelma
-    planner in this same operation. A final AnkiWeb pass publishes any Kelma
-    pulls or explicit conflict choices, making the resolved local state
-    canonical on both services.
+    The standalone Anki plugin may explicitly add native sync before and after
+    this pass. KelmaDesktop always forces the two-source KelmaSync-only path.
     """
     global _V2_ACTIVE_ACTION
+    if config.kelmasync_only():
+        also_ankiweb = False
     blocked = _v2_active_message()
     if blocked:
         tooltip(f"KelmaSync: {blocked}")
@@ -4159,6 +4191,7 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
             since=since,
             deck_names=deck_names,
             allow_large_deletes=bool(cfg.get("v2_allow_large_deletes", False)),
+            newest_wins=config.kelmasync_only(),
             progress=dlg.progress,
         )
 
@@ -4183,11 +4216,11 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
                 _V2_ACTIVE_ACTION = None
             dlg.progress(msg)
             tooltip(f"KelmaSync: {msg}")
-            # Local now includes the initial AnkiWeb sync, so the two sides are
-            # explicitly Anki/AnkiWeb vs KelmaSync.
+            # Desktop compares only the local collection and KelmaSync. In
+            # dual-service mode, local also includes the completed native sync.
             V2FullDiffDialog(mw, reconcile_mode=True).exec()
             if not also_ankiweb:
-                dlg.complete("Conflict choices applied. Run sync once more to verify convergence.", ok=True)
+                dlg.complete("Conflict review finished. Run sync once more to verify convergence.", ok=True)
                 return
             dlg.progress("Publishing resolved local state to AnkiWeb…")
 
@@ -4248,7 +4281,11 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
     def start_kelma_reconcile() -> None:
         global _V2_ACTIVE_ACTION
         _V2_ACTIVE_ACTION = "sync"
-        dlg.progress("Comparing Anki / AnkiWeb with KelmaSync…")
+        dlg.progress(
+            "Comparing local collection with KelmaSync…"
+            if config.kelmasync_only()
+            else "Comparing Anki / AnkiWeb with KelmaSync…"
+        )
         try:
             mw.taskman.run_in_background(_work, _done, uses_collection=True)
         except Exception as err:  # noqa: BLE001

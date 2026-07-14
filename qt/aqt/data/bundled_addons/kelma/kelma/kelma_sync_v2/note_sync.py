@@ -13,6 +13,7 @@ _BATCH_SIZE = 3000
 from anki.collection import Collection
 
 from .client import V2Client, V2Conflict
+from .conflict_policy import newest_side
 from . import anki_apply, anki_local
 
 
@@ -40,6 +41,7 @@ def sync_notes_once(
     deck_name: str | None = None,
     deck_names: list[str] | None = None,
     server_manifest: dict[str, Any] | None = None,
+    newest_wins: bool = False,
     progress=None,
 ) -> NoteSyncResult:
     """Run one note-only sync pass.
@@ -47,8 +49,10 @@ def sync_notes_once(
     Behavior:
     - local-only notes are pushed
     - server-only notes are pulled/applied when `apply_pulls` is true
-    - checksum mismatches attempt a normal push with server checksum as base;
-      if server changed concurrently, the server returns 409 and we collect it
+    - checksum mismatches remain conflicts unless ``newest_wins`` can identify
+      one strictly newer source; ties and unknown timestamps stay explicit
+    - local-newer writes use the observed server checksum as their concurrency
+      base, so a concurrent server update still becomes a conflict
     - if conflicts exist, raises `NoteSyncConflict` after processing safe items
 
     The caller should persist `result.server_time` only if no exception is
@@ -78,36 +82,43 @@ def sync_notes_once(
     total = len(all_guids)
     if progress:
         progress(f"Notes: planning {total} notes by checksum…")
-    local_only: list[str] = []
-    server_only: list[str] = []
+    local_pushes: list[tuple[str, str]] = []
+    server_pulls: list[str] = []
     for idx, guid in enumerate(all_guids, 1):
         if progress and (idx == 1 or idx == total or idx % _BATCH_SIZE == 0):
-            progress(f"Notes plan {idx}/{total} · to push {len(local_only)}, to pull {len(server_only)}, in sync {result.skipped}, conflicts {len(result.conflicts)}")
+            progress(f"Notes plan {idx}/{total} · to push {len(local_pushes)}, to pull {len(server_pulls)}, in sync {result.skipped}, conflicts {len(result.conflicts)}")
         local = local_manifest.get(guid)
         server = server_notes.get(guid)
         if local and server and local.get("checksum") == server.get("checksum"):
             result.skipped += 1
             continue
         if local and not server:
-            local_only.append(guid)
+            local_pushes.append((guid, ""))
             continue
         if server and not local:
             if apply_pulls:
-                server_only.append(guid)
+                server_pulls.append(guid)
             else:
                 result.skipped += 1
             continue
         if local and server:
-            # Both sides exist and content checksums differ. Do not silently
-            # choose local; surface this as an explicit merge conflict.
-            result.conflicts.append({"guid": guid, "server": server, "client": local})
+            winner = newest_side(local, server) if newest_wins else None
+            if winner == "server":
+                if apply_pulls:
+                    server_pulls.append(guid)
+                else:
+                    result.skipped += 1
+            elif winner == "local":
+                local_pushes.append((guid, str(server.get("checksum") or "")))
+            else:
+                result.conflicts.append({"guid": guid, "server": server, "client": local})
 
-    # Batch-pull server-only notes instead of one HTTP request per note.
-    if server_only:
+    # Batch-pull server-only and unambiguously server-newer notes.
+    if server_pulls:
         if progress:
-            progress(f"Notes: pulling {len(server_only)} server-only notes in {_BATCH_SIZE}-item batches…")
-        for start in range(0, len(server_only), _BATCH_SIZE):
-            chunk = server_only[start:start + _BATCH_SIZE]
+            progress(f"Notes: pulling {len(server_pulls)} server notes in {_BATCH_SIZE}-item batches…")
+        for start in range(0, len(server_pulls), _BATCH_SIZE):
+            chunk = server_pulls[start:start + _BATCH_SIZE]
             resp = client.batch_pull(notes=chunk)
             for record in resp.get("notes", []):
                 try:
@@ -116,18 +127,18 @@ def sync_notes_once(
                 except Exception:
                     result.skipped += 1
             if progress:
-                progress(f"Notes: pulled {min(start + _BATCH_SIZE, len(server_only))}/{len(server_only)}…")
+                progress(f"Notes: pulled {min(start + _BATCH_SIZE, len(server_pulls))}/{len(server_pulls)}…")
 
-    if local_only:
+    if local_pushes:
         if progress:
-            progress(f"Notes: pushing {len(local_only)} new notes in {_BATCH_SIZE}-item batches…")
-        total_batches = (len(local_only) + _BATCH_SIZE - 1) // _BATCH_SIZE
-        for batch_idx, start in enumerate(range(0, len(local_only), _BATCH_SIZE), 1):
-            chunk = local_only[start:start + _BATCH_SIZE]
+            progress(f"Notes: pushing {len(local_pushes)} local notes in {_BATCH_SIZE}-item batches…")
+        total_batches = (len(local_pushes) + _BATCH_SIZE - 1) // _BATCH_SIZE
+        for batch_idx, start in enumerate(range(0, len(local_pushes), _BATCH_SIZE), 1):
+            chunk = local_pushes[start:start + _BATCH_SIZE]
             if progress:
                 progress(f"Notes: sending batch {batch_idx}/{total_batches} ({len(chunk)} notes)…")
             payload_notes = []
-            for guid in chunk:
+            for guid, base_checksum in chunk:
                 rec = anki_local.note_record(col, guid)
                 if rec:
                     payload_notes.append({
@@ -136,14 +147,14 @@ def sync_notes_once(
                         "fields": rec["fields"],
                         "tags": rec["tags"],
                         "client_modified_at": rec["client_modified_at"],
-                        "base_checksum": "",
+                        "base_checksum": base_checksum,
                     })
             resp = client.batch_push({"notes": payload_notes, "cards": [], "notetypes": [], "decks": []})
             result.pushed += int((resp.get("accepted") or {}).get("notes", 0))
             conflicts = (resp.get("conflicts") or {}).get("notes", []) or []
             result.conflicts.extend(conflicts)
             if progress:
-                progress(f"Notes batch {batch_idx}/{total_batches} complete · {min(start + _BATCH_SIZE, len(local_only))}/{len(local_only)} sent · pushed {result.pushed}, conflicts {len(result.conflicts)}")
+                progress(f"Notes batch {batch_idx}/{total_batches} complete · {min(start + _BATCH_SIZE, len(local_pushes))}/{len(local_pushes)} sent · pushed {result.pushed}, conflicts {len(result.conflicts)}")
 
     if result.conflicts:
         if progress:

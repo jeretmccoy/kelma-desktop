@@ -52,7 +52,6 @@ from aqt.operations.deck import set_current_deck
 from aqt.profiles import ProfileManager as ProfileManagerType
 from aqt.qt import *
 from aqt.qt import sip
-from aqt.sync import sync_collection
 from aqt.taskman import TaskManager
 from aqt.theme import Theme, theme_manager
 from aqt.toolbar import BottomWebView, Toolbar, TopWebView
@@ -1101,17 +1100,8 @@ title="{}" {}>{}</button>""".format(
         self.flags.require_refresh()
 
     def _sync_collection_and_media(self, after_sync: Callable[[], None]) -> None:
-        "Caller should ensure auth available."
-
-        def on_collection_sync_finished() -> None:
-            self.col.models._clear_cache()
-            gui_hooks.sync_did_finish()
-            self.reset()
-
-            after_sync()
-
-        gui_hooks.sync_will_start()
-        sync_collection(self, on_done=on_collection_sync_finished)
+        """Do not enter Anki's native cloud-sync path in KelmaDesktop."""
+        after_sync()
 
     def maybe_auto_sync_on_open_close(self, after_sync: Callable[[bool], None]) -> None:
         "If disabled, after_sync() is called immediately."
@@ -1121,15 +1111,12 @@ title="{}" {}>{}</button>""".format(
             after_sync(False)
 
     def can_auto_sync(self) -> bool:
-        "True if syncing on startup/shutdown enabled."
-        return self._can_sync_unattended() and self.pm.auto_syncing_enabled()
+        """KelmaDesktop never runs native startup/shutdown sync."""
+        return False
 
     def _can_sync_unattended(self) -> bool:
-        return (
-            bool(self.pm.sync_auth())
-            and not self.safeMode
-            and not self.restoring_backup
-        )
+        """Disable native collection and media sync in KelmaDesktop."""
+        return False
 
     # legacy
     def _sync(self) -> None:

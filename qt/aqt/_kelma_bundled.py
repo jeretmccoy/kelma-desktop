@@ -15,8 +15,9 @@ from __future__ import annotations
 import os
 import shutil
 
-BUNDLED_VERSION = "1.0.117"
+BUNDLED_VERSION = "1.0.118"
 ADDON = "kelma"
+IS_KELMA_DESKTOP = True
 _MARKER = ".kelma_bundled_version"
 
 # PyOxidizer compiles Python files under `_aqt/data` to `.pyc`. Anki's add-on

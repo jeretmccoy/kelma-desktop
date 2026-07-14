@@ -8,6 +8,7 @@ from typing import Any
 from anki.collection import Collection
 
 from .client import V2Client
+from .conflict_policy import newest_side
 from . import anki_apply, anki_local
 
 _BATCH_SIZE = 3000
@@ -47,6 +48,7 @@ def sync_cards_once(
     progress=None,
     deck_names: list[str] | None = None,
     prefer_server: bool = False,
+    newest_wins: bool = False,
 ) -> CardSyncResult:
     if progress:
         progress("Cards: building local card manifest…")
@@ -78,8 +80,16 @@ def sync_cards_once(
             continue
         if l and s:
             if l.get("checksum") != s.get("checksum"):
-                # Structural change (deck move / ord change) — a real conflict.
-                result.conflicts.append({"card_id": int(l["card_id"]), "server": s, "client": l})
+                # KelmaSync-only clients have two canonical sources, so a
+                # structural move with a clear timestamp direction can use the same newest-wins
+                # rule as scheduling. Ties/unknowns remain explicit conflicts.
+                winner = newest_side(l, s) if newest_wins else None
+                if winner == "server":
+                    server_pull_ids.append(int(s["card_id"]))
+                elif winner == "local":
+                    local_only.append(int(l["card_id"]))
+                else:
+                    result.conflicts.append({"card_id": int(l["card_id"]), "server": s, "client": l})
                 continue
             # Same structure: scheduling is newest-wins by card mod time.
             local_ts = _parse_ts(l.get("modified_at"))

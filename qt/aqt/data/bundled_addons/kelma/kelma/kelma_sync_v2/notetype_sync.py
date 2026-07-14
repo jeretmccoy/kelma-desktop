@@ -11,6 +11,7 @@ from typing import Any
 from anki.collection import Collection
 
 from .client import V2Client, V2Conflict
+from .conflict_policy import newest_side
 from . import anki_apply, anki_local
 
 
@@ -37,6 +38,7 @@ def sync_notetypes_once(
     progress=None,
     notetype_ids: set[int] | None = None,
     prefer_server: bool = False,
+    newest_wins: bool = False,
 ) -> NotetypeSyncResult:
     if progress:
         progress("Notetypes: building local notetype manifest…")
@@ -87,8 +89,27 @@ def sync_notetypes_once(
                 result.skipped += 1
             continue
         if l and s:
-            # Same identity but different checksum: user must decide.
-            result.conflicts.append({"notetype_id": ntid, "server": s, "client": l})
+            winner = newest_side(l, s) if newest_wins else None
+            if winner == "server" and apply_pulls:
+                anki_apply.apply_server_notetype(col, client, ntid)
+                result.pulled += 1
+            elif winner == "server":
+                result.skipped += 1
+            elif winner == "local":
+                try:
+                    _push_notetype(
+                        col, client, ntid,
+                        base_checksum=str(s.get("checksum") or ""),
+                    )
+                    result.pushed += 1
+                except V2Conflict as conflict:
+                    result.conflicts.append({
+                        "notetype_id": ntid,
+                        "server": conflict.server or s,
+                        "client": conflict.client or l,
+                    })
+            else:
+                result.conflicts.append({"notetype_id": ntid, "server": s, "client": l})
     if result.conflicts:
         if progress:
             progress(f"Notetypes: {len(result.conflicts)} conflict(s)")

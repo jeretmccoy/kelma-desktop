@@ -121,7 +121,7 @@ def _prompt_and_download(item: dict[str, Any]) -> None:
 def check_for_update(*, manual: bool = False) -> None:
     """Check Desktop core or standalone add-on updates without blocking the UI."""
     global _checking
-    if config.get().get("kelmasync_only"):
+    if config.kelmasync_only():
         try:
             from aqt._kelma_update import check_for_kelma_update
 
@@ -164,7 +164,7 @@ def check_for_update(*, manual: bool = False) -> None:
 def schedule_automatic_check() -> None:
     cfg = config.get()
     # KelmaDesktop core owns its daily check; avoid a duplicate add-on timer.
-    if cfg.get("kelmasync_only"):
+    if config.kelmasync_only():
         return
     if cfg.get("check_for_updates", True) is False:
         return
