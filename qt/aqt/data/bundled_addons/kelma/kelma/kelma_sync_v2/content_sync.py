@@ -12,6 +12,7 @@ from .deck_sync import DeckSyncConflict, DeckSyncResult, sync_decks_once
 from .media_sync import MediaSyncResult, sync_media_once
 from .notetype_sync import NotetypeSyncConflict, NotetypeSyncResult, sync_notetypes_once
 from .note_sync import NoteSyncConflict, NoteSyncResult, sync_notes_once
+from .review_sync import ReviewSyncConflict, ReviewSyncResult, sync_reviews_once
 from .tombstone_sync import TombstoneSyncResult, apply_tombstones
 from . import anki_local, sync_state
 
@@ -24,6 +25,7 @@ class ContentSyncResult:
     notetypes: NotetypeSyncResult = None  # type: ignore[assignment]
     notes: NoteSyncResult = None  # type: ignore[assignment]
     cards: CardSyncResult = None  # type: ignore[assignment]
+    reviews: ReviewSyncResult = None  # type: ignore[assignment]
     media: MediaSyncResult = None  # type: ignore[assignment]
     server_time: str = ""
 
@@ -185,6 +187,14 @@ def _scope_server_manifest_to_decks(client: V2Client, manifest: dict[str, Any], 
     scoped["cards"] = [c for c in manifest.get("cards", []) if int(c.get("card_id", 0)) in scoped_card_ids]
     scoped["notes"] = [n for n in manifest.get("notes", []) if str(n.get("guid", "")) in scoped_note_guids]
     scoped["decks"] = [d for d in manifest.get("decks", []) if _in_scope(str(d.get("name", "")))]
+    scoped["reviews"] = [
+        review for review in manifest.get("reviews", [])
+        if _in_scope(str(review.get("deck_name", "")))
+    ]
+    scoped["study_days"] = [
+        day for day in manifest.get("study_days", [])
+        if _in_scope(str(day.get("deck_name", "")))
+    ]
     # Server note manifests don't carry notetype_id, so notetype scoping is
     # handled by the caller (which has local notetype IDs from scoped notes).
     return scoped
@@ -266,7 +276,7 @@ def sync_content_once(
       4. save new snapshot
     """
     if progress:
-        progress("Phase 1/9: fetching full server manifest for checksum comparison…")
+        progress("Phase 1/10: fetching full server manifest for checksum comparison…")
     # IMPORTANT: checksum planning requires a full server manifest. If we pass
     # `since`, unchanged server rows are omitted and look local-only, causing
     # needless re-sends even when checksums match. Incremental sync can only be
@@ -298,20 +308,21 @@ def sync_content_once(
         progress(
             f"Server manifest: {len(manifest.get('notes', []))} notes, "
             f"{len(manifest.get('cards', []))} cards, {len(manifest.get('notetypes', []))} notetypes, "
-            f"{len(manifest.get('decks', []))} decks, {len(manifest.get('media', []))} media"
+            f"{len(manifest.get('decks', []))} decks, {len(manifest.get('reviews', []))} reviews, "
+            f"{len(manifest.get('media', []))} media"
         )
-        progress("Phase 2/9: applying scoped server tombstones…")
+        progress("Phase 2/10: applying scoped server tombstones…")
     tombstones = apply_tombstones(col, manifest)
     if progress:
         progress(f"Tombstones complete: applied {tombstones.applied}")
-        progress("Phase 3/9: previous scoped snapshot loaded")
+        progress("Phase 3/10: previous scoped snapshot loaded")
 
     # Repair local duplicate generated cards before building manifests. This
     # prevents invalid duplicate cards/blank-GUID duplicate notes from being
     # counted or pushed forever.
     anki_local.repair_duplicate_cards(col, deck_names=deck_names, progress=progress)
     if progress:
-        progress("Phase 4/9: building local key snapshot…")
+        progress("Phase 4/10: building local key snapshot…")
     local_note_manifest = anki_local.note_manifest(col, deck_names=deck_names, progress=progress)
     if progress:
         progress(f"Snapshot: {len(local_note_manifest)} local notes")
@@ -380,7 +391,7 @@ def sync_content_once(
             "without treating unused stock structure as local edits"
         )
     if progress:
-        progress("Phase 5/9: detecting local deletes…")
+        progress("Phase 5/10: detecting local deletes…")
     local_deletes = (
         sync_state.compute_local_deletes(snapshot, local_keys) if scope_matches else {}
     )
@@ -420,7 +431,7 @@ def sync_content_once(
 
     try:
         if progress:
-            progress("Phase 6/9: syncing decks…")
+            progress("Phase 6/10: syncing decks…")
         result.decks = sync_decks_once(
             col,
             client,
@@ -434,7 +445,7 @@ def sync_content_once(
         raise ContentSyncConflict("deck", e.conflicts) from e
     try:
         if progress:
-            progress("Phase 7/9: syncing notetypes…")
+            progress("Phase 7/10: syncing notetypes…")
         result.notetypes = sync_notetypes_once(
             col,
             client,
@@ -449,7 +460,7 @@ def sync_content_once(
         raise ContentSyncConflict("notetype", e.conflicts) from e
     try:
         if progress:
-            progress("Phase 8/9: syncing notes…")
+            progress("Phase 8/10: syncing notes…")
         result.notes = sync_notes_once(
             col,
             client,
@@ -464,7 +475,7 @@ def sync_content_once(
     except NoteSyncConflict as e:
         raise ContentSyncConflict("note", e.conflicts) from e
     if progress:
-        progress("Phase 9/9: syncing cards…")
+        progress("Phase 9/10: syncing cards…")
     try:
         result.cards = sync_cards_once(
             col,
@@ -478,6 +489,19 @@ def sync_content_once(
         )
     except CardSyncConflict as e:
         raise ContentSyncConflict("card", e.conflicts) from e
+    try:
+        if progress:
+            progress("Phase 10/10: syncing full review history and daily limits…")
+        result.reviews = sync_reviews_once(
+            col,
+            client,
+            manifest,
+            deck_names=deck_names,
+            clear_pending_usn=newest_wins,
+            progress=progress,
+        )
+    except ReviewSyncConflict as e:
+        raise ContentSyncConflict("review history", e.conflicts) from e
     if progress:
         progress("Final phase: syncing media…")
     result.media = sync_media_once(

@@ -203,15 +203,22 @@ class V2Client:
         *,
         notes: list[str] | None = None,
         cards: list[int] | None = None,
+        reviews: list[int] | None = None,
         notetypes: list[int] | None = None,
         decks: list[str] | None = None,
     ) -> dict[str, Any]:
-        return self._json("POST", "/v2/batch/pull", {
+        payload = {
             "notes": notes or [],
             "cards": cards or [],
             "notetypes": notetypes or [],
             "decks": decks or [],
-        })
+        }
+        # Only upgraded servers accept this field. Review sync calls with an
+        # explicit list after seeing the manifest capability marker; ordinary
+        # content pulls retain the legacy four-field request shape.
+        if reviews is not None:
+            payload["reviews"] = reviews
+        return self._json("POST", "/v2/batch/pull", payload)
 
     def batch_push(self, payload: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
         return self._json("POST", "/v2/batch/push", payload, force=force)

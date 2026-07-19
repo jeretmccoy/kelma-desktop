@@ -11,6 +11,7 @@ def test_bundle_upgrade_removes_stale_source_and_preserves_metadata(
     (src / "kelma" / "kelma_sync_v2").mkdir(parents=True)
     (src / "kelma" / "consts.pyc").write_bytes(b"new bytecode")
     (src / "kelma" / "kelma_sync_v2" / "conflict_policy.pyc").write_bytes(b"new policy")
+    (src / "kelma" / "kelma_sync_v2" / "review_sync.pyc").write_bytes(b"review history")
     (src / "meta.json").write_text("bundled metadata", encoding="utf8")
 
     (dst / "kelma").mkdir(parents=True)
@@ -31,6 +32,9 @@ def test_bundle_upgrade_removes_stale_source_and_preserves_metadata(
     assert (
         dst / "kelma" / "kelma_sync_v2" / "conflict_policy.pyc"
     ).read_bytes() == b"new policy"
+    assert (
+        dst / "kelma" / "kelma_sync_v2" / "review_sync.pyc"
+    ).read_bytes() == b"review history"
     assert (dst / "meta.json").read_text(encoding="utf8") == "user metadata"
     assert (dst / ".kelma_bundled_version").read_text(
         encoding="utf8"

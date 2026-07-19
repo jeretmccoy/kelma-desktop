@@ -109,6 +109,33 @@ def deck_checksum(config: dict) -> str:
     return _checksum_parts_py([config])
 
 
+def review_checksum(
+    note_guid: str,
+    card_ord: int,
+    ease: int,
+    interval: int,
+    last_interval: int,
+    factor: int,
+    taken_millis: int,
+    review_kind: int,
+) -> str:
+    """Stable checksum for an immutable review-history row.
+
+    The collection-local card id and current deck name are deliberately absent;
+    another collection remaps the card id through ``(note_guid, card_ord)``.
+    """
+    return _checksum_parts_py([
+        note_guid,
+        int(card_ord),
+        int(ease),
+        int(interval),
+        int(last_interval),
+        int(factor),
+        int(taken_millis),
+        int(review_kind),
+    ])
+
+
 def card_checksums_batch(items: list[tuple[str, str, int]]) -> list[str]:
     """Hash card structural identities in one Rust invocation.
 

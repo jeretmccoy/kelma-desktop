@@ -4094,6 +4094,8 @@ def _v2_delete_and_restore_from_server() -> None:
         card_ids = [int(value) for value in col.db.list("SELECT id FROM cards")]
         if card_ids:
             col.remove_cards(card_ids)
+        review_count = int(col.db.scalar("SELECT count(*) FROM revlog") or 0)
+        col.db.execute("DELETE FROM revlog")
 
         deck_ids = [
             int(value)
@@ -4114,6 +4116,7 @@ def _v2_delete_and_restore_from_server() -> None:
         return {
             "notes": len(note_ids),
             "cards": len(card_ids),
+            "reviews": review_count,
             "decks": len(deck_ids),
             "media": media_removed,
         }
@@ -4134,7 +4137,8 @@ def _v2_delete_and_restore_from_server() -> None:
         dialog.complete(
             "Local reset complete: "
             f"{removed['notes']} notes, {removed['cards']} remaining cards, "
-            f"{removed['decks']} decks, and {removed['media']} files removed. "
+            f"{removed['reviews']} reviews, {removed['decks']} decks, and "
+            f"{removed['media']} files removed. "
             "Starting a fresh server restore…",
             ok=True,
         )
@@ -4256,6 +4260,8 @@ def _v2_test_sync_notes(*, also_ankiweb: bool = False) -> None:
             f"notetypes {result.notetypes.pushed}/{result.notetypes.pulled}, "
             f"notes {result.notes.pushed}/{result.notes.pulled}, "
             f"cards {result.cards.pushed}/{result.cards.pulled}, "
+            f"reviews {result.reviews.pushed}/{result.reviews.pulled}, "
+            f"daily limits {result.reviews.study_days_pushed}/{result.reviews.study_days_applied}, "
             f"media {result.media.uploaded}/{result.media.downloaded}."
         )
         if not also_ankiweb:
