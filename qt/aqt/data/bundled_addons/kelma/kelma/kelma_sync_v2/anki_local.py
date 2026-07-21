@@ -221,14 +221,17 @@ def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[
         f"""
         SELECT c.id, c.did, c.ord, c.mod, c.type, c.queue, c.due,
                c.ivl, c.factor, c.reps, c.lapses, c.left, c.odue, c.odid,
-               c.flags, c.data, n.guid
+               c.flags, c.data, n.id, n.guid
         FROM cards c JOIN notes n ON n.id = c.nid
         {where}
         """,
         *params,
     )
     deck_names: dict[int, str] = {}
-    for cid, did, ord_, mod, typ, queue, due, ivl, factor, reps, lapses, left, odue, odid, flags, data, guid in rows:
+    for (
+        cid, did, ord_, mod, typ, queue, due, ivl, factor, reps, lapses,
+        left, odue, odid, flags, data, nid, guid,
+    ) in rows:
         did_int = int(did)
         if did_int not in deck_names:
             deck = col.decks.get(did_int)
@@ -248,8 +251,10 @@ def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[
         }
         out.append({
             "card_id": int(cid),
+            "note_id": int(nid),
             "note_guid": guid or "",
             "ord": int(ord_ or 0),
+            "deck_id": did_int,
             "deck_name": deck_name,
             "logical_key": f"{guid or ''}:{int(ord_ or 0)}",
             "checksum": "",

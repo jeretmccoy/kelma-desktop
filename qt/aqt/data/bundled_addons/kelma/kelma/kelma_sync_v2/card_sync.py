@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
+from datetime import datetime
 from typing import Any
 
 from anki.collection import Collection
 
+from . import anki_apply, anki_local
 from .client import V2Client
 from .conflict_policy import newest_side
-from . import anki_apply, anki_local
 
 _BATCH_SIZE = 3000
 
@@ -29,6 +29,44 @@ class CardSyncConflict(RuntimeError):
 
 def _logical_key(entry: dict) -> str:
     return entry.get("logical_key") or f"{entry.get('note_guid', '')}:{int(entry.get('ord', 0) or 0)}"
+
+
+def _looks_like_interrupted_server_pull(local: dict, server: dict) -> bool:
+    """Detect a pristine Default card generated while an upstream pull aborted.
+
+    Applying a new server note makes Anki generate a card in deck id 1 with a
+    current timestamp. If a later note conflict aborts before card sync, the
+    next pass must not treat that generated timestamp as an intentional move
+    that outranks the existing server card.
+    """
+    if int(local.get("deck_id", 0) or 0) != 1:
+        return False
+    if str(server.get("deck_name", "")).casefold() == str(
+        local.get("deck_name", "")
+    ).casefold():
+        return False
+    scheduling = local.get("scheduling") or {}
+    if any(
+        int(scheduling.get(field, 0) or 0) != 0
+        for field in ("type", "queue", "ivl", "reps", "lapses")
+    ):
+        return False
+    note_id = int(local.get("note_id", 0) or 0)
+    card_id = int(local.get("card_id", 0) or 0)
+    try:
+        modified = int(
+            datetime.fromisoformat(
+                str(local.get("modified_at", "")).replace("Z", "+00:00")
+            ).timestamp()
+        )
+    except (TypeError, ValueError):
+        return False
+    return (
+        note_id > 0
+        and card_id > 0
+        and abs(note_id // 1000 - modified) <= 1
+        and abs(card_id // 1000 - modified) <= 1
+    )
 
 
 def sync_cards_once(
@@ -83,6 +121,9 @@ def sync_cards_once(
             continue
         if l and s:
             if l.get("checksum") != s.get("checksum"):
+                if newest_wins and _looks_like_interrupted_server_pull(l, s):
+                    server_pull_ids.append(int(s["card_id"]))
+                    continue
                 # KelmaSync-only clients have two canonical sources, so a
                 # structural move with a clear timestamp direction can use the same newest-wins
                 # rule as scheduling. Ties/unknowns remain explicit conflicts.

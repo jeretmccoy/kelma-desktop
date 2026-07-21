@@ -5,6 +5,7 @@ decks/media until notes are proven end-to-end.
 """
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -12,9 +13,9 @@ _BATCH_SIZE = 3000
 
 from anki.collection import Collection
 
+from . import anki_apply, anki_local
 from .client import V2Client, V2Conflict
 from .conflict_policy import newest_side
-from . import anki_apply, anki_local
 
 
 @dataclass
@@ -30,6 +31,29 @@ class NoteSyncConflict(RuntimeError):
     def __init__(self, conflicts: list[dict[str, Any]]) -> None:
         super().__init__(f"{len(conflicts)} note conflict(s)")
         self.conflicts = conflicts
+
+
+def _canonically_equivalent_notes(
+    local: dict[str, Any] | None,
+    server: dict[str, Any] | None,
+) -> bool:
+    """Treat canonically-equivalent Unicode and tag ordering as one note.
+
+    Anki normalizes combining-mark order when a note is applied, while the
+    server retains the writer's original byte order. Their visible text is
+    identical, but raw checksums otherwise conflict forever.
+    """
+    if not local or not server:
+        return False
+
+    def normalize(value: Any) -> str:
+        return unicodedata.normalize("NFC", str(value or ""))
+
+    local_fields = [normalize(value) for value in local.get("fields", [])]
+    server_fields = [normalize(value) for value in server.get("fields", [])]
+    local_tags = sorted(normalize(value) for value in local.get("tags", []))
+    server_tags = sorted(normalize(value) for value in server.get("tags", []))
+    return local_fields == server_fields and local_tags == server_tags
 
 
 def sync_notes_once(
@@ -84,6 +108,7 @@ def sync_notes_once(
         progress(f"Notes: planning {total} notes by checksum…")
     local_pushes: list[tuple[str, str]] = []
     server_pulls: list[str] = []
+    ambiguous: list[str] = []
     for idx, guid in enumerate(all_guids, 1):
         if progress and (idx == 1 or idx == total or idx % _BATCH_SIZE == 0):
             progress(f"Notes plan {idx}/{total} · to push {len(local_pushes)}, to pull {len(server_pulls)}, in sync {result.skipped}, conflicts {len(result.conflicts)}")
@@ -117,7 +142,34 @@ def sync_notes_once(
             elif winner == "local":
                 local_pushes.append((guid, str(server.get("checksum") or "")))
             else:
-                result.conflicts.append({"guid": guid, "server": server, "client": local})
+                ambiguous.append(guid)
+
+    # A checksum mismatch can be byte-only: Anki canonicalizes Unicode
+    # combining marks and tag order when applying a note. Hydrate only the
+    # ambiguous rows, then relay the local canonical representation to the
+    # server so subsequent manifests converge without weakening real conflicts.
+    for start in range(0, len(ambiguous), _BATCH_SIZE):
+        chunk = ambiguous[start:start + _BATCH_SIZE]
+        response = client.batch_pull(notes=chunk)
+        hydrated = {
+            str(record.get("guid", "")): record
+            for record in response.get("notes", [])
+        }
+        for guid in chunk:
+            server_record = hydrated.get(guid)
+            local_record = (
+                anki_local.note_record(col, guid) if server_record else None
+            )
+            if _canonically_equivalent_notes(local_record, server_record):
+                local_pushes.append(
+                    (guid, str(server_notes[guid].get("checksum") or ""))
+                )
+            else:
+                result.conflicts.append({
+                    "guid": guid,
+                    "server": server_notes[guid],
+                    "client": local_manifest[guid],
+                })
 
     # Batch-pull server-only and unambiguously server-newer notes.
     if server_pulls:
